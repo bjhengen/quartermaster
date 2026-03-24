@@ -1,7 +1,8 @@
 """Tests for the commands plugin."""
 
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+
 from plugins.commands.plugin import CommandsPlugin
 from quartermaster.plugin.health import HealthStatus
 

@@ -1,6 +1,7 @@
 """Tests for the briefing plugin skeleton."""
 
 import pytest
+
 from plugins.briefing.plugin import BriefingPlugin
 from plugins.briefing.templates import format_briefing_section
 from quartermaster.plugin.health import HealthStatus

@@ -1,6 +1,7 @@
 """Tests for the chat plugin."""
 
 import pytest
+
 from plugins.chat.plugin import ChatPlugin
 from plugins.chat.prompts import DEFAULT_PERSONA
 from quartermaster.plugin.health import HealthStatus
