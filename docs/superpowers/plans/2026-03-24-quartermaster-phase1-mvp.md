@@ -1393,6 +1393,7 @@ Expected: FAIL — `ModuleNotFoundError`
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class HealthStatus(str, Enum):
@@ -1405,7 +1406,7 @@ class HealthStatus(str, Enum):
 class HealthReport:
     status: HealthStatus
     message: str = ""
-    details: dict = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
 ```
 
 `src/quartermaster/plugin/base.py`:
@@ -3610,7 +3611,7 @@ class ConversationManager:
         """
         await self._db.execute(
             """UPDATE qm.conversations
-               SET last_active_at = systimestamp - INTERVAL :hours HOUR
+               SET last_active_at = systimestamp - NUMTODSMINTERVAL(:hours, 'HOUR')
                WHERE transport = :transport
                  AND external_chat_id = :chat_id
                  AND last_active_at > systimestamp - INTERVAL :hours2 HOUR""",
