@@ -113,3 +113,5 @@ COMMIT;
 
 -- Verify
 SELECT table_name FROM all_tables WHERE owner = 'QM' ORDER BY table_name;
+
+EXIT;
