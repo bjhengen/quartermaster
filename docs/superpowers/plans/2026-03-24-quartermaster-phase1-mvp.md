@@ -1297,7 +1297,6 @@ git commit -m "feat: Tool Registry with schema generation and error handling"
 """Tests for plugin discovery and loading."""
 
 import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from quartermaster.plugin.loader import PluginLoader
 from quartermaster.plugin.base import QuartermasterPlugin
@@ -2957,6 +2956,7 @@ git commit -m "feat: Anthropic API client with cost estimation"
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+import httpx
 from quartermaster.llm.router import LLMRouter
 from quartermaster.llm.models import LLMRequest, LLMResponse, ChatMessage
 from quartermaster.llm.local import LlamaSwapStatus
@@ -3934,6 +3934,7 @@ from quartermaster.plugin.base import QuartermasterPlugin
 from quartermaster.plugin.context import PluginContext
 from quartermaster.plugin.health import HealthReport, HealthStatus
 from quartermaster.llm.models import LLMRequest, ChatMessage
+from quartermaster.conversation.models import Turn
 from quartermaster.transport.types import OutboundMessage, TransportType
 from plugins.chat.prompts import DEFAULT_PERSONA
 
@@ -4009,7 +4010,6 @@ class ChatPlugin(QuartermasterPlugin):
         ))
 
         # Save conversation turns
-        from quartermaster.conversation.models import Turn
         await self._ctx.conversation.save_turn(conv, Turn(
             role="user", content=message.text,
         ))
@@ -4372,7 +4372,22 @@ class BriefingPlugin(QuartermasterPlugin):
         ctx.events.subscribe("schedule.briefing.morning", self._morning_briefing)
         ctx.events.subscribe("schedule.briefing.evening", self._evening_briefing)
         ctx.events.subscribe("schedule.briefing.weekly", self._weekly_briefing)
+        ctx.events.subscribe("briefing.ready", self._deliver_briefing)
         logger.info("briefing_plugin_ready")
+
+    async def _deliver_briefing(self, data: dict[str, Any]) -> None:
+        """Deliver a composed briefing to all allowed users via Telegram."""
+        assert self._ctx is not None
+        text = data.get("text", "")
+        if not text:
+            return
+        # Send to each configured user
+        for user_id in self._ctx.config.allowed_user_ids:
+            await self._ctx.transport.send(OutboundMessage(
+                transport=TransportType.TELEGRAM,
+                chat_id=str(user_id),
+                text=text,
+            ))
 
     async def teardown(self) -> None:
         pass
@@ -4565,6 +4580,8 @@ from quartermaster.core.events import EventBus
 from quartermaster.core.tools import ToolRegistry
 from quartermaster.core.usage import UsageTracker
 from quartermaster.core.metrics import start_metrics_server
+from quartermaster.core.scheduler import Scheduler
+from quartermaster.core.approval import ApprovalManager
 from quartermaster.llm.local import LocalLLMClient
 from quartermaster.llm.anthropic_client import AnthropicClient
 from quartermaster.llm.router import LLMRouter
@@ -4649,7 +4666,6 @@ class QuartermasterApp:
         )
 
         # Scheduler
-        from quartermaster.core.scheduler import Scheduler
         self._scheduler = Scheduler(
             db=self._db,
             events=self._events,
@@ -4666,7 +4682,6 @@ class QuartermasterApp:
         self._transport.register(telegram)
 
         # Approval manager
-        from quartermaster.core.approval import ApprovalManager
         self._approval = ApprovalManager(
             db=self._db,
             transport=self._transport,
