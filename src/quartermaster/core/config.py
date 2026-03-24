@@ -100,6 +100,6 @@ def load_config(path: Path) -> QuartermasterConfig:
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
     with open(path) as f:
-        raw: dict[str, Any] = yaml.safe_load(f)
+        raw: dict[str, Any] = yaml.safe_load(f) or {}
     qm_section = raw.get("quartermaster", {})
     return QuartermasterConfig(**qm_section)
