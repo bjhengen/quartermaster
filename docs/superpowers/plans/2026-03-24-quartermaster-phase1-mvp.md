@@ -26,6 +26,7 @@
 | `CLAUDE.md` | Project-specific Claude instructions |
 | `config/settings.example.yaml` | Config template for public repo |
 | `scripts/setup_oracle_pdb.sql` | PDB + schema + table creation |
+| `scripts/setup_test_pdb.sql` | Test PDB setup |
 
 ### Core (`src/quartermaster/core/`)
 | File | Purpose |
@@ -85,11 +86,13 @@
 | `tests/core/test_events.py` | Event bus tests |
 | `tests/core/test_config.py` | Config loading tests |
 | `tests/core/test_tools.py` | Tool Registry tests |
+| `tests/core/test_database.py` | Database layer tests |
 | `tests/core/test_scheduler.py` | Scheduler tests |
 | `tests/core/test_approval.py` | Approval manager tests |
 | `tests/core/test_usage.py` | Usage tracker tests |
 | `tests/llm/test_router.py` | LLM routing tests |
 | `tests/llm/test_local.py` | llama-swap client tests |
+| `tests/llm/test_anthropic_client.py` | Anthropic client tests |
 | `tests/transport/test_types.py` | Message type tests |
 | `tests/conversation/test_manager.py` | Conversation manager tests |
 | `tests/plugins/test_chat.py` | Chat plugin tests |
@@ -606,9 +609,9 @@ GRANT CREATE TABLE TO qm;
 GRANT CREATE SEQUENCE TO qm;
 GRANT CREATE PROCEDURE TO qm;
 
--- Same tables as production (copy from setup_oracle_pdb.sql)
--- In production, we'd use a shared DDL script; for now, duplicate.
-@@setup_oracle_pdb_tables.sql
+-- Same tables as production — duplicate the DDL from setup_oracle_pdb.sql here.
+-- During implementation, copy the CREATE TABLE and CREATE INDEX statements
+-- from setup_oracle_pdb.sql into this file (everything after the CREATE USER block).
 ```
 
 Note: The test PDB tables can be factored into a shared `setup_oracle_pdb_tables.sql` during implementation. The key point is that tests run against a real Oracle instance with the same schema.
@@ -1082,7 +1085,7 @@ async def test_execute_tool() -> None:
 @pytest.mark.asyncio
 async def test_execute_nonexistent_tool() -> None:
     registry = ToolRegistry()
-    with pytest.raises(KeyError, match="no.such.tool"):
+    with pytest.raises(KeyError, match=r"no\.such\.tool"):
         await registry.execute("no.such.tool", {})
 
 
@@ -1256,7 +1259,7 @@ class ToolRegistry:
         """
         tool = self._tools.get(name)
         if tool is None:
-            raise KeyError(f"Tool '{name}' not found — {name}")
+            raise KeyError(f"Tool '{name}' not found")
         try:
             return await tool.handler(params)
         except Exception as e:
@@ -2470,8 +2473,6 @@ git commit -m "feat: three-tier approval manager with inline keyboard flow"
 
 ## Task 11: LLM Types and Local Client
 
-> Note: Tasks were renumbered from the original plan. Tasks 9-10 (Scheduler, Approval Manager) were added per spec review.
-
 **Files:**
 - Create: `src/quartermaster/llm/models.py`
 - Create: `src/quartermaster/llm/local.py`
@@ -2609,6 +2610,7 @@ class LLMResponse:
 ```python
 """llama-swap local LLM client (OpenAI-compatible API)."""
 
+import json
 from enum import Enum
 from typing import Any
 
@@ -2705,7 +2707,6 @@ class LocalLLMClient:
         tool_calls: list[ToolCall] = []
         if "tool_calls" in message and message["tool_calls"]:
             for tc in message["tool_calls"]:
-                import json
                 args = tc["function"].get("arguments", "{}")
                 if isinstance(args, str):
                     args = json.loads(args)
@@ -2739,7 +2740,7 @@ git commit -m "feat: LLM types and llama-swap local client"
 
 ---
 
-## Task 10: Anthropic Client
+## Task 12: Anthropic Client
 
 **Files:**
 - Create: `src/quartermaster/llm/anthropic_client.py`
@@ -2942,7 +2943,7 @@ git commit -m "feat: Anthropic API client with cost estimation"
 
 ---
 
-## Task 11: LLM Router
+## Task 13: LLM Router
 
 **Files:**
 - Create: `src/quartermaster/llm/router.py`
@@ -2959,6 +2960,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from quartermaster.llm.router import LLMRouter
 from quartermaster.llm.models import LLMRequest, LLMResponse, ChatMessage
 from quartermaster.llm.local import LlamaSwapStatus
+from quartermaster.core.usage import BudgetStatus
 
 
 @pytest.fixture
@@ -2993,7 +2995,7 @@ def mock_anthropic() -> MagicMock:
 def mock_usage() -> MagicMock:
     tracker = MagicMock()
     tracker.log = AsyncMock()
-    tracker.get_budget_status = AsyncMock(return_value="ok")
+    tracker.get_budget_status = AsyncMock(return_value=BudgetStatus.OK)
     return tracker
 
 
@@ -3219,7 +3221,7 @@ git commit -m "feat: smart LLM router with local-first routing and fallback"
 
 ---
 
-## Task 12: Transport Types and Manager
+## Task 14: Transport Types and Manager
 
 **Files:**
 - Create: `src/quartermaster/transport/types.py`
@@ -3391,7 +3393,7 @@ git commit -m "feat: transport types and manager abstraction"
 
 ---
 
-## Task 13: Conversation Manager
+## Task 15: Conversation Manager
 
 **Files:**
 - Create: `src/quartermaster/conversation/models.py`
@@ -3511,6 +3513,7 @@ class Conversation:
 ```python
 """Conversation history and context window management."""
 
+import json
 from typing import Any
 from datetime import datetime, timedelta, timezone
 
@@ -3572,7 +3575,6 @@ class ConversationManager:
 
     async def save_turn(self, conv: Conversation, turn: Turn) -> None:
         """Save a turn to the conversation."""
-        import json
         await self._db.execute(
             """INSERT INTO qm.turns
                (conversation_id, role, content, tool_calls, tool_results,
@@ -3600,8 +3602,33 @@ class ConversationManager:
             {"conv_id": conv.conversation_id},
         )
 
+    async def force_new_conversation(self, transport: str, chat_id: str) -> None:
+        """Force the next message to start a new conversation.
+
+        Sets last_active_at to a time older than idle_timeout, so
+        get_or_create will create a fresh conversation.
+        """
+        await self._db.execute(
+            """UPDATE qm.conversations
+               SET last_active_at = systimestamp - INTERVAL :hours HOUR
+               WHERE transport = :transport
+                 AND external_chat_id = :chat_id
+                 AND last_active_at > systimestamp - INTERVAL :hours2 HOUR""",
+            {
+                "hours": str(self._config.idle_timeout_hours + 1),
+                "transport": transport,
+                "chat_id": chat_id,
+                "hours2": str(self._config.idle_timeout_hours),
+            },
+        )
+
     async def get_context_window(self, conv: Conversation) -> list[ChatMessage]:
-        """Load recent turns and build the context window."""
+        """Load recent turns and build the context window.
+
+        Uses a token budget to determine how many turns to include.
+        Fetches up to max_turns, then trims from oldest if token count
+        exceeds max_tokens.
+        """
         rows = await self._db.fetch_all(
             """SELECT turn_id, role, content, tool_calls, tool_results,
                       llm_backend, tokens_in, tokens_out
@@ -3618,18 +3645,32 @@ class ConversationManager:
         # Reverse to chronological order
         rows = list(reversed(rows))
 
+        # Build messages with token budget enforcement
         messages: list[ChatMessage] = []
+        total_tokens = 0
+        max_tokens = self._config.context_window_max_tokens
+
         for row in rows:
-            import json
             role = row[1]
             content = row[2]
             tool_calls_raw = row[3]
-            tool_results_raw = row[4]
 
             msg = ChatMessage(role=role, content=content)
             if tool_calls_raw:
-                msg.tool_calls = json.loads(tool_calls_raw) if isinstance(tool_calls_raw, str) else tool_calls_raw
+                parsed = json.loads(tool_calls_raw) if isinstance(tool_calls_raw, str) else tool_calls_raw
+                msg.tool_calls = parsed
+
+            # Estimate tokens: ~4 chars per token (rough but fast)
+            msg_text = (content or "") + str(tool_calls_raw or "")
+            estimated_tokens = len(msg_text) // 4
+            total_tokens += estimated_tokens
             messages.append(msg)
+
+        # Trim oldest messages if over token budget
+        while total_tokens > max_tokens and len(messages) > 1:
+            removed = messages.pop(0)
+            removed_text = (removed.content or "") + str(removed.tool_calls or "")
+            total_tokens -= len(removed_text) // 4
 
         return messages
 ```
@@ -3648,7 +3689,7 @@ git commit -m "feat: conversation manager with history and context window"
 
 ---
 
-## Task 14: Telegram Transport
+## Task 16: Telegram Transport
 
 **Files:**
 - Create: `src/quartermaster/transport/telegram.py`
@@ -3826,7 +3867,7 @@ git commit -m "feat: Telegram transport with long-polling and inline keyboards"
 
 ---
 
-## Task 15: Chat Plugin
+## Task 17: Chat Plugin
 
 **Files:**
 - Create: `plugins/chat/plugin.py`
@@ -4055,7 +4096,7 @@ git commit -m "feat: chat plugin with LLM conversation and tool calling loop"
 
 ---
 
-## Task 16: Commands Plugin
+## Task 18: Commands Plugin
 
 **Files:**
 - Create: `plugins/commands/plugin.py`
@@ -4264,7 +4305,7 @@ git commit -m "feat: commands plugin with /status, /models, /help, /spend, /new"
 
 ---
 
-## Task 17: Briefing Plugin Skeleton
+## Task 19: Briefing Plugin Skeleton
 
 **Files:**
 - Create: `plugins/briefing/plugin.py`
@@ -4388,7 +4429,7 @@ git commit -m "feat: briefing plugin skeleton with scheduled event handlers"
 
 ---
 
-## Task 18: Metrics Endpoint
+## Task 20: Metrics Endpoint
 
 **Files:**
 - Create: `src/quartermaster/core/metrics.py`
@@ -4486,13 +4527,9 @@ async def start_metrics_server(port: int) -> web.AppRunner:
     return runner
 ```
 
-Note: Add `aiohttp` to `requirements.txt` for the metrics HTTP server.
+Note: `aiohttp` is already in `requirements.txt` (added in Task 1).
 
-- [ ] **Step 2: Update requirements.txt**
-
-Add `aiohttp>=3.9.0` to `requirements.txt`.
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: Commit**
 
 ```bash
 git add src/quartermaster/core/metrics.py requirements.txt
@@ -4501,7 +4538,7 @@ git commit -m "feat: Prometheus metrics endpoint with LLM, tool, and budget gaug
 
 ---
 
-## Task 19: Application Bootstrap
+## Task 21: Application Bootstrap
 
 **Files:**
 - Create: `src/quartermaster/core/app.py`
@@ -4698,7 +4735,7 @@ class QuartermasterApp:
 
     async def run(self) -> None:
         """Start the application and wait for shutdown signal."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, self._shutdown_event.set)
 
@@ -4785,7 +4822,7 @@ git commit -m "feat: application bootstrap wiring all core services and plugins"
 
 ---
 
-## Task 20: Docker Build and Smoke Test
+## Task 22: Docker Build and Smoke Test
 
 **Files:**
 - Modify: `Dockerfile` (if needed)
@@ -4823,7 +4860,7 @@ git commit -m "chore: Docker build verified, lint and type check passing"
 
 ---
 
-## Task 21: Integration Smoke Test
+## Task 23: Integration Smoke Test
 
 - [ ] **Step 1: Create a real config/settings.yaml** (not committed)
 
