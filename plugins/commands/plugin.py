@@ -79,6 +79,15 @@ class CommandsPlugin(QuartermasterPlugin):
                 f" ({summary['percent_used']}%)"
             )
 
+        # MCP status
+        if self._ctx.mcp_client:
+            status_lines.append("\n**MCP Clients:**")
+            for name, status in self._ctx.mcp_client.get_server_statuses().items():
+                status_lines.append(
+                    f"  {name} ({status['transport']}): "
+                    f"{status['status']} — {status['tools']} tools"
+                )
+
         await self._send(msg, "\n".join(status_lines))
 
     async def _cmd_models(self, msg: InboundMessage) -> None:

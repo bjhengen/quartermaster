@@ -64,6 +64,28 @@ quartermaster:
   # Plugins directory
   plugins_dir: "/app/plugins"
 
+  # MCP (Model Context Protocol) infrastructure
+  mcp:
+    # MCP Server — exposes Quartermaster tools to Claude Code and other MCP clients
+    server:
+      enabled: true
+      port: 9200
+      bind: "127.0.0.1"
+      auth_token_file: "/app/credentials/mcp_server_token"
+      allowed_hosts:
+        - "127.0.0.1"
+      # approval_chat_id: "YOUR_TELEGRAM_CHAT_ID"  # Required for confirm-tier tools via MCP
+
+    # MCP Clients — connect to external MCP servers
+    clients: {}
+    # Example:
+    # my-server:
+    #   transport: streamable_http  # or: sse, stdio
+    #   url: "http://localhost:8080/mcp"
+    #   auth_token_file: "/app/credentials/my_server_token"
+    #   default_approval_tier: confirm  # or: autonomous, notify
+    #   enabled: true
+
   # Logging
   logging:
     level: "INFO"
