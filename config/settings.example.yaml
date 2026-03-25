@@ -1,0 +1,70 @@
+# Quartermaster Configuration
+# Copy to config/settings.yaml and fill in your values
+
+quartermaster:
+  # Telegram bot token from @BotFather
+  telegram_bot_token: "YOUR_BOT_TOKEN"
+  # Your Telegram user ID (only this user can interact)
+  allowed_user_ids:
+    - 123456789
+
+  # Oracle database
+  database:
+    dsn: "localhost:1521/quartermaster_pdb"
+    user: "qm"
+    password: "YOUR_PASSWORD"
+    pool_min: 2
+    pool_max: 10
+
+  # LLM routing
+  llm:
+    # Local LLM via llama-swap
+    local:
+      base_url: "http://localhost:8200/v1"
+      preferred_model: "qwen3.5-27b"
+      timeout_seconds: 60
+      swap_timeout_seconds: 120
+    # Anthropic API fallback
+    anthropic:
+      api_key_file: "/app/credentials/anthropic_api_key"
+      default_model: "claude-sonnet-4-20250514"
+      fallback_model: "claude-haiku-4-5-20251001"
+    # Budget
+    monthly_budget_usd: 50.00
+    budget_warn_percent: 80
+    budget_block_percent: 100
+
+  # Scheduler
+  scheduler:
+    missed_event_grace_minutes: 15
+
+  # Approval
+  approval:
+    default_timeout_minutes: 60
+
+  # Metrics
+  metrics:
+    port: 9100
+
+  # Bot persona
+  persona: |
+    You are Quartermaster, a personal AI assistant. You are concise, direct,
+    and action-oriented. When you can answer directly, do so. When a task
+    requires a tool, call it without preamble. For actions with external
+    consequences, always present a draft for approval before executing.
+    Keep status reports scannable — use bullet points, not paragraphs.
+    Match the user's tone — brief messages get brief replies.
+
+  # Conversation
+  conversation:
+    context_window_max_turns: 20
+    context_window_max_tokens: 8000
+    idle_timeout_hours: 4
+
+  # Plugins directory
+  plugins_dir: "/app/plugins"
+
+  # Logging
+  logging:
+    level: "INFO"
+    format: "json"

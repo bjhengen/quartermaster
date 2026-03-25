@@ -1,0 +1,13 @@
+services:
+  quartermaster:
+    build: .
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./config:/app/config
+      - ./credentials:/app/credentials
+      - ./logs:/app/logs
+      - ./plugins:/app/plugins
+    environment:
+      - QM_ENV=production
+      - ORACLE_DSN=localhost:1521/quartermaster_pdb
