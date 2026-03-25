@@ -20,3 +20,4 @@ class PluginContext:
     approval: Any = None  # ApprovalManager
     usage: Any = None  # UsageTracker
     conversation: Any = None  # ConversationManager
+    mcp_client: Any = None  # MCPClientManager
