@@ -70,7 +70,7 @@ async def metrics_handler(request: web.Request) -> web.Response:
     """HTTP handler for /metrics endpoint."""
     return web.Response(
         body=generate_latest(),
-        content_type=CONTENT_TYPE_LATEST,
+        content_type="text/plain",
     )
 
 

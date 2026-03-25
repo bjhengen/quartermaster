@@ -26,7 +26,7 @@ class Database:
 
     async def connect(self) -> None:
         """Initialize the connection pool."""
-        self._pool = await oracledb.create_pool_async(  # type: ignore[misc]
+        self._pool = oracledb.create_pool_async(
             user=self._config.user,
             password=self._config.password,
             dsn=self._config.dsn,
@@ -53,7 +53,7 @@ class Database:
             cursor = conn.cursor()
             await cursor.execute(sql, params or {})
             rows: list[tuple[Any, ...]] = await cursor.fetchall()
-            await cursor.close()
+            cursor.close()
             return rows
         finally:
             await self._pool.release(conn)
@@ -69,7 +69,7 @@ class Database:
             cursor = conn.cursor()
             await cursor.execute(sql, params or {})
             row: tuple[Any, ...] | None = await cursor.fetchone()
-            await cursor.close()
+            cursor.close()
             return row
         finally:
             await self._pool.release(conn)
@@ -86,7 +86,7 @@ class Database:
             await cursor.execute(sql, params or {})
             await conn.commit()
             rowcount: int = cursor.rowcount
-            await cursor.close()
+            cursor.close()
             return rowcount
         finally:
             await self._pool.release(conn)
@@ -102,6 +102,6 @@ class Database:
             cursor = conn.cursor()
             await cursor.executemany(sql, params_list)
             await conn.commit()
-            await cursor.close()
+            cursor.close()
         finally:
             await self._pool.release(conn)

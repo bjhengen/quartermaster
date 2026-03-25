@@ -108,9 +108,15 @@ class TelegramTransport:
 
     async def _handle_message(self, update: Update, context: Any) -> None:
         """Handle incoming text messages."""
+        logger.info(
+            "telegram_update_received",
+            user_id=update.effective_user.id if update.effective_user else None,
+            text=update.effective_message.text[:50] if update.effective_message and update.effective_message.text else None,
+        )
         if not update.effective_user or not update.effective_message:
             return
         if not self._is_allowed(update.effective_user.id):
+            logger.warning("telegram_user_not_allowed", user_id=update.effective_user.id)
             return
 
         assert update.effective_chat is not None
