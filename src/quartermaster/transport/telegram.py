@@ -32,7 +32,7 @@ class TelegramTransport:
         self._bot_token = bot_token
         self._allowed_user_ids = set(allowed_user_ids)
         self._events = events
-        self._app: Application | None = None  # type: ignore[type-arg]
+        self._app: Application | None = None
 
     async def start(self) -> None:
         """Initialize and start the Telegram bot."""
@@ -54,13 +54,13 @@ class TelegramTransport:
 
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling(drop_pending_updates=True)  # type: ignore[union-attr]
+        await self._app.updater.start_polling(drop_pending_updates=True)
         logger.info("telegram_started")
 
     async def stop(self) -> None:
         """Stop the Telegram bot."""
         if self._app:
-            await self._app.updater.stop()  # type: ignore[union-attr]
+            await self._app.updater.stop()
             await self._app.stop()
             await self._app.shutdown()
             logger.info("telegram_stopped")

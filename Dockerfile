@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Install Oracle Instant Client dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libaio1 \
+    libaio1t64 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -16,4 +16,5 @@ COPY plugins/ plugins/
 ENV PYTHONPATH=/app/src:/app
 ENV QM_ENV=production
 
-ENTRYPOINT ["python", "-m", "quartermaster"]
+ENTRYPOINT ["python"]
+CMD ["-m", "quartermaster"]
