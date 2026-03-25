@@ -83,6 +83,7 @@ quartermaster:
       allowed_hosts:
         - "127.0.0.1"
         - "192.168.1.0/24"
+      approval_chat_id: "123456789"  # Brian's Telegram chat ID for confirm-tier approvals
 
     clients:
       claude-memory:
@@ -115,7 +116,7 @@ quartermaster:
 
 `mcp/config.py` defines:
 
-- `MCPServerConfig` — port, bind, auth_token_file, allowed_hosts
+- `MCPServerConfig` — port, bind, auth_token_file, allowed_hosts, approval_chat_id (required when enabled — Brian's Telegram chat ID for routing confirm-tier approvals from MCP clients)
 - `MCPClientEntry` — transport type (enum: `streamable_http`, `sse`, `stdio`), connection params (url or command+args), default_approval_tier, tool_overrides dict, namespace override, enabled flag
 - `MCPConfig` — server config + dict of named client entries
 
@@ -260,7 +261,7 @@ The handler closure wraps the MCP SDK's `session.call_tool(name, arguments)` in 
 
 ### Architecture
 
-The server is a lightweight ASGI app using the MCP SDK's Streamable HTTP server support. Runs on dedicated port 9200 alongside (not replacing) the existing Prometheus metrics server on 9100.
+The server is a Starlette ASGI app served by uvicorn programmatically (via `uvicorn.Server` with `config.setup()`, not CLI). The MCP SDK provides ASGI request handlers; we wrap them in Starlette middleware for auth. This runs alongside the existing aiohttp metrics server on a separate dedicated port (9200). Dependencies `starlette` and `uvicorn` are added to requirements (unless the `mcp` SDK bundles them — check at implementation time).
 
 ### Request Flow
 
@@ -285,16 +286,18 @@ MCP Client sends: tools/call("commands.system_status", {})
 When an MCP client (e.g., Claude Code) calls a `confirm`-tier tool, the approval flows through Telegram:
 
 1. MCP server receives tool call
-2. Sends approval request to Brian via Telegram inline keyboard
-3. MCP request blocks (with timeout matching approval timeout config)
-4. Brian approves/rejects on Telegram
-5. MCP response returns the result (if approved) or an approval-rejected error
+2. Sends approval request to Brian's Telegram chat via inline keyboard (using `mcp.server.approval_chat_id` from config — this is Brian's Telegram chat ID, required when the MCP server is enabled)
+3. MCP server creates an `asyncio.Event` keyed by approval ID and subscribes to `approval.resolved` on the EventBus
+4. MCP request handler `await`s the event with a timeout (matching `approval.default_timeout_minutes` from config)
+5. When Brian approves/rejects on Telegram, the `approval.resolved` event fires, signaling the waiting `asyncio.Event`
+6. MCP response returns the result (if approved) or an approval-rejected/expired error
+7. On timeout, the approval is auto-expired and an error is returned to the MCP client
 
 This preserves the approval flow regardless of which client triggered the tool.
 
 ### Dynamic Tool Notifications
 
-The server subscribes to `tools.registry_changed` on the Event Bus. When fired (by Tool Registry on register/unregister), the server sends `notifications/tools/list_changed` to all connected MCP clients.
+The server subscribes to `tools.registry_changed` on the Event Bus. When fired (by Tool Registry on register/unregister), the server sends the MCP protocol's `notifications/tools/list_changed` to all connected MCP clients. Note: `tools.registry_changed` is the internal EventBus event; the MCP server translates it into the outbound MCP protocol notification. These are distinct.
 
 ### Metrics
 
@@ -350,27 +353,35 @@ Minimal, backward-compatible additions to `core/tools.py`.
 
 ### Modified Methods
 
-- `register()` — Now emits `tools.registry_changed` event after successful registration.
+- `register()` — Gains a `source: str = "local"` parameter. Emits `tools.registry_changed` event after successful registration. Existing callers are unaffected because of the default value.
 
 ### New Field on ToolDefinition
 
 - `source: str = "local"` — Tracks tool origin. Local plugin tools: `"local"`. Remote MCP tools: server name (e.g., `"claude-memory"`). Used by `list_by_source()`, `/status` display, and metrics labels.
+- `is_remote` property — Computed: `return self.source != "local"`. Convenience for filtering.
 
 ### Constructor Change
 
-`ToolRegistry` now receives `EventBus` in its constructor to emit events. Follows the same pattern as `Scheduler` and `ApprovalManager`.
+`ToolRegistry` now accepts an optional `EventBus` in its constructor. When `None`, `register()` and `unregister()` skip event emission. This preserves true backward compatibility — existing tests that construct `ToolRegistry()` with no arguments continue to work.
 
 ```python
 # Before
 self._tools = ToolRegistry()
 
-# After
+# After (app.py)
 self._tools = ToolRegistry(events=self._events)
+
+# Tests still work
+self._tools = ToolRegistry()  # events=None, no event emission
 ```
+
+### Name Collision Handling
+
+If a remote tool name collides with an existing tool (after namespacing), the bridge logs a warning and skips the remote tool. No crash. Local tools always take priority.
 
 ### Backward Compatibility
 
-All existing methods (`get()`, `list_tools()`, `get_tool_schemas()`, `execute()`) unchanged. Existing plugins and tests continue to work — `source` defaults to `"local"`, and the event emission is a no-op from their perspective.
+All existing methods (`get()`, `list_tools()`, `get_tool_schemas()`, `execute()`) unchanged. Existing plugins and tests continue to work — `source` defaults to `"local"`, `events` defaults to `None`, and no existing call sites need updating.
 
 ---
 
@@ -445,7 +456,7 @@ MCP Server:
 
 ### Health Events
 
-MCP client manager emits `plugin.health_changed` events on state transitions, integrated with existing health monitoring.
+MCP client manager emits `mcp.client.health_changed` events on state transitions (not `plugin.health_changed`, since the MCP client manager is a core service, not a plugin). The `/status` command and health monitoring treat it as a virtual component with the well-known name `"mcp-client"`.
 
 ---
 
@@ -468,7 +479,7 @@ MCP client manager emits `plugin.health_changed` events on state transitions, in
 
 ### Integration Tests
 
-- `tests/mcp/test_integration.py` — **Loopback test:** Start QM's MCP server, connect QM's MCP client via Streamable HTTP, verify a local plugin tool can be called through the full MCP round-trip.
+- `tests/mcp/test_integration.py` — **Loopback test:** Uses `pytest-asyncio`, starts the MCP server on a random available port, generates a temporary auth token, configures a client entry pointing at `localhost:<port>`, and validates a tool call round-trip. Server and client are torn down in the fixture.
 - SSE client test against a mock SSE server fixture.
 - stdio client test against a minimal test server script in `tests/fixtures/`.
 
@@ -485,15 +496,19 @@ MCP client manager emits `plugin.health_changed` events on state transitions, in
 ### New Python Dependencies
 
 ```
-mcp>=1.0.0    # Official MCP SDK (Anthropic/ModelContextProtocol)
+mcp>=1.0.0,<2.0.0    # Official MCP SDK (Anthropic/ModelContextProtocol)
 ```
 
-The SDK pulls in dependencies for Streamable HTTP, SSE, and stdio transports. `httpx` and `pydantic` are already in the project.
+Pin to exact tested version during implementation. The SDK pulls in dependencies for Streamable HTTP, SSE, and stdio transports. `httpx` and `pydantic` are already in the project. `starlette` and `uvicorn` may be needed if not bundled by the SDK — verify at implementation time.
+
+The MCP SDK handles protocol version negotiation. Quartermaster uses whatever protocol version the SDK supports. No custom version handling is needed.
 
 ### Dockerfile Changes
 
-- Add `mcp` to `requirements.txt`
+- Add `mcp` (and `starlette`/`uvicorn` if needed) to `requirements.txt`
 - No new system packages required
+- Note: `docker-compose.yml` needs no changes for port 9200 — host networking mode exposes it automatically. Ensure IP allowlist is configured to restrict access to trusted hosts.
+- **stdio transport note:** The base image (`python:3.13-slim`) has no Node.js. stdio MCP servers requiring Node.js need it added to the Dockerfile. The `MCPClientManager` validates that configured stdio commands exist at startup and logs a clear error if missing, rather than failing at first tool call.
 
 ---
 
