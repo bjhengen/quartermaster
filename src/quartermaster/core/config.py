@@ -6,6 +6,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+from quartermaster.mcp.config import MCPConfig
+
 
 class DatabaseConfig(BaseModel):
     """Oracle database connection configuration."""
@@ -91,6 +93,7 @@ class QuartermasterConfig(BaseModel):
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     persona: str = ""
     plugins_dir: str = "/app/plugins"
 
