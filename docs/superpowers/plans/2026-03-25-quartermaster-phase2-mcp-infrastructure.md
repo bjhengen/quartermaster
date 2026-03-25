@@ -238,6 +238,19 @@ def test_mcp_config_full() -> None:
     )
     assert cfg.server is not None
     assert "test-server" in cfg.clients
+
+
+def test_mcp_config_in_quartermaster_config() -> None:
+    """MCPConfig is properly nested in QuartermasterConfig."""
+    from quartermaster.core.config import QuartermasterConfig
+
+    # Default — mcp section exists with defaults
+    config = QuartermasterConfig(
+        database={"dsn": "x", "user": "x", "password": "x"},
+    )
+    assert config.mcp is not None
+    assert config.mcp.server is None
+    assert config.mcp.clients == {}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1833,13 +1846,17 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.types import ListToolsResult
 
+# Note: At implementation time, check if streamablehttp_client has been
+# replaced by streamable_http_client in the installed SDK version.
+# The SDK is evolving — use whichever is current and not deprecated.
+
 from quartermaster.core.metrics import (
     mcp_client_reconnect_total,
     mcp_client_status,
     mcp_tool_call_duration,
     mcp_tool_calls_total,
 )
-from quartermaster.core.tools import ApprovalTier, ToolRegistry
+from quartermaster.core.tools import ApprovalTier, ToolHandler, ToolRegistry
 from quartermaster.mcp.bridge import mcp_result_to_dict, mcp_tool_to_definition
 from quartermaster.mcp.config import MCPClientEntry, MCPConfig, TransportType
 from quartermaster.mcp.transports import MCPTransportFactory
@@ -1864,6 +1881,7 @@ class MCPClientManager:
         self._events = events
         self._factory = MCPTransportFactory()
         self._sessions: dict[str, ClientSession] = {}
+        self._transport_contexts: dict[str, Any] = {}  # Store context managers for cleanup
         self._server_statuses: dict[str, dict[str, Any]] = {}
         self._reconnect_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -1887,10 +1905,17 @@ class MCPClientManager:
             task.cancel()
         self._reconnect_tasks.clear()
 
-        # Disconnect all sessions
+        # Disconnect all sessions and close transport contexts
         for name in list(self._sessions.keys()):
             self._unregister_server_tools(name)
             self._sessions.pop(name, None)
+            # Clean up transport context manager
+            ctx = self._transport_contexts.pop(name, None)
+            if ctx is not None:
+                try:
+                    await ctx.__aexit__(None, None, None)
+                except Exception:
+                    logger.debug("mcp_transport_cleanup_error", server=name)
             self._update_status(name, "disconnected", 0)
 
         logger.info("mcp_client_manager_stopped")
@@ -1943,7 +1968,10 @@ class MCPClientManager:
     async def _create_session(
         self, name: str, ctx: dict[str, Any]
     ) -> ClientSession:
-        """Create an MCP ClientSession using the appropriate transport."""
+        """Create an MCP ClientSession using the appropriate transport.
+
+        Stores the transport context manager for proper cleanup on stop().
+        """
         transport_type = ctx["type"]
 
         if transport_type == "streamable_http":
@@ -1961,7 +1989,8 @@ class MCPClientManager:
         else:
             raise ValueError(f"Unknown transport type: {transport_type}")
 
-        # Enter the transport context manager
+        # Enter the transport context manager and store for cleanup
+        self._transport_contexts[name] = transport_ctx
         streams = await transport_ctx.__aenter__()
         read_stream, write_stream = streams[0], streams[1]
 
@@ -1993,13 +2022,9 @@ class MCPClientManager:
                 tier = ApprovalTier(override.approval_tier)
 
             # Create handler closure that calls the remote tool
-            tool_name_for_closure = mcp_tool.name
-            session_ref = session
-            server_ref = server_name
-
-            async def make_handler(
+            def make_handler(
                 _session: ClientSession, _tool_name: str, _server: str
-            ) -> Any:
+            ) -> ToolHandler:
                 async def handler(params: dict[str, Any]) -> dict[str, Any]:
                     start = time.monotonic()
                     try:
@@ -2024,7 +2049,7 @@ class MCPClientManager:
 
                 return handler
 
-            handler = await make_handler(session_ref, tool_name_for_closure, server_ref)
+            handler = make_handler(session, mcp_tool.name, server_name)
 
             defn = mcp_tool_to_definition(
                 tool=mcp_tool,
@@ -2145,6 +2170,7 @@ Create `tests/mcp/test_server.py`:
 
 import json
 import pytest
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from quartermaster.core.tools import ApprovalTier, ToolRegistry
@@ -2463,10 +2489,12 @@ class MCPServer:
 
         self._events.subscribe("approval.resolved", on_resolved)
 
+        # Use the approval timeout from MCP server config, or default 60 min
+        timeout_seconds = 60 * 60  # 1 hour default
         try:
             await asyncio.wait_for(
                 resolved_event.wait(),
-                timeout=self._approval._timeout_minutes * 60,
+                timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
             return {"error": f"Approval timed out for tool '{name}'"}
@@ -2495,10 +2523,17 @@ class MCPServer:
         ))
 
     async def _on_tools_changed(self, data: dict[str, Any]) -> None:
-        """Handle tool registry changes — notify connected clients."""
+        """Handle tool registry changes — notify connected clients.
+
+        TODO: The SDK's StreamableHTTPSessionManager does not automatically
+        propagate tool changes. To send notifications/tools/list_changed to
+        connected clients, we need to track active sessions and call
+        session.send_tool_list_changed() on each. For now, clients must
+        reconnect to see tool changes. This is acceptable for Phase 2
+        since tool changes only happen at startup (plugin load, MCP client
+        connect). Real-time notifications can be added when needed.
+        """
         logger.debug("mcp_server_tools_changed", **data)
-        # The MCP SDK's session manager handles notifications
-        # to connected clients when tools change
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -2644,9 +2679,10 @@ In `plugins/commands/plugin.py`, update the status handler to include MCP inform
 
 ```python
         # MCP status
-        if ctx.mcp_client:
+        assert self._ctx is not None
+        if self._ctx.mcp_client:
             lines.append("\n**MCP Clients:**")
-            for name, status in ctx.mcp_client.get_server_statuses().items():
+            for name, status in self._ctx.mcp_client.get_server_statuses().items():
                 lines.append(
                     f"  {name} ({status['transport']}): "
                     f"{status['status']} — {status['tools']} tools"
@@ -2701,7 +2737,15 @@ git commit -m "feat: add MCP status to /status command, update example config"
 - Create: `tests/mcp/test_integration.py`
 - Create: `tests/fixtures/echo_server.py`
 
-- [ ] **Step 1: Create minimal stdio echo server for testing**
+- [ ] **Step 1: Register integration marker in pyproject.toml**
+
+Add to `[tool.pytest.ini_options]` in `pyproject.toml`:
+
+```toml
+markers = ["integration: MCP integration tests"]
+```
+
+- [ ] **Step 2: Create minimal stdio echo server for testing**
 
 Create `tests/fixtures/echo_server.py`:
 
@@ -2713,6 +2757,7 @@ Exposes a single 'echo' tool that returns its input.
 """
 
 import asyncio
+import json
 import sys
 
 from mcp.server.lowlevel.server import Server
@@ -2744,8 +2789,8 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict | None = None) -> list[TextContent]:
     if name == "echo":
         msg = (arguments or {}).get("message", "")
-        return [TextContent(type="text", text=f'{{"echo": "{msg}"}}')]
-    return [TextContent(type="text", text='{"error": "unknown tool"}')]
+        return [TextContent(type="text", text=json.dumps({"echo": msg}))]
+    return [TextContent(type="text", text=json.dumps({"error": "unknown tool"}))]
 
 
 async def main() -> None:
@@ -2757,7 +2802,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-- [ ] **Step 2: Write integration test**
+- [ ] **Step 3: Write integration test**
 
 Create `tests/mcp/test_integration.py`:
 
@@ -2822,17 +2867,17 @@ async def test_stdio_echo_server_round_trip() -> None:
     assert tools.get("echo.echo") is None
 ```
 
-- [ ] **Step 3: Run integration test**
+- [ ] **Step 4: Run integration test**
 
 Run: `pytest tests/mcp/test_integration.py -v -m integration`
 Expected: PASS — full round-trip through stdio works
 
-- [ ] **Step 4: Run full test suite**
+- [ ] **Step 5: Run full test suite**
 
 Run: `pytest tests/ -v`
 Expected: All tests pass (integration test may be skipped without `-m integration` marker if pytest.ini is configured that way — verify)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add tests/fixtures/echo_server.py tests/mcp/test_integration.py
