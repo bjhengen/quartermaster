@@ -46,7 +46,8 @@ class Database:
         self, sql: str, params: dict[str, Any] | None = None
     ) -> list[tuple[Any, ...]]:
         """Execute a query and return all rows."""
-        assert self._pool is not None, "Database not connected"
+        if self._pool is None:
+            raise RuntimeError("Database not connected — call connect() first")
         conn = await self._pool.acquire()
         try:
             cursor = conn.cursor()
@@ -61,7 +62,8 @@ class Database:
         self, sql: str, params: dict[str, Any] | None = None
     ) -> tuple[Any, ...] | None:
         """Execute a query and return one row."""
-        assert self._pool is not None, "Database not connected"
+        if self._pool is None:
+            raise RuntimeError("Database not connected — call connect() first")
         conn = await self._pool.acquire()
         try:
             cursor = conn.cursor()
@@ -76,7 +78,8 @@ class Database:
         self, sql: str, params: dict[str, Any] | None = None
     ) -> int:
         """Execute a DML statement and return rows affected."""
-        assert self._pool is not None, "Database not connected"
+        if self._pool is None:
+            raise RuntimeError("Database not connected — call connect() first")
         conn = await self._pool.acquire()
         try:
             cursor = conn.cursor()
@@ -92,7 +95,8 @@ class Database:
         self, sql: str, params_list: list[dict[str, Any]]
     ) -> None:
         """Execute a DML statement with multiple parameter sets."""
-        assert self._pool is not None, "Database not connected"
+        if self._pool is None:
+            raise RuntimeError("Database not connected — call connect() first")
         conn = await self._pool.acquire()
         try:
             cursor = conn.cursor()

@@ -54,13 +54,15 @@ class TelegramTransport:
 
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling(drop_pending_updates=True)
+        if self._app.updater is not None:
+            await self._app.updater.start_polling(drop_pending_updates=True)
         logger.info("telegram_started")
 
     async def stop(self) -> None:
         """Stop the Telegram bot."""
         if self._app:
-            await self._app.updater.stop()
+            if self._app.updater is not None:
+                await self._app.updater.stop()
             await self._app.stop()
             await self._app.shutdown()
             logger.info("telegram_stopped")
