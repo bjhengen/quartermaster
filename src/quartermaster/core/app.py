@@ -19,6 +19,8 @@ from quartermaster.core.usage import UsageTracker
 from quartermaster.llm.anthropic_client import AnthropicClient
 from quartermaster.llm.local import LocalLLMClient
 from quartermaster.llm.router import LLMRouter
+from quartermaster.mcp.client import MCPClientManager
+from quartermaster.mcp.server import MCPServer
 from quartermaster.plugin.context import PluginContext
 from quartermaster.plugin.loader import PluginLoader
 from quartermaster.transport.manager import TransportManager
@@ -43,6 +45,8 @@ class QuartermasterApp:
         self._scheduler: Any = None
         self._approval: Any = None
         self._plugin_loader: PluginLoader | None = None
+        self._mcp_client: MCPClientManager | None = None
+        self._mcp_server: MCPServer | None = None
         self._metrics_runner: Any = None
         self._shutdown_event = asyncio.Event()
 
@@ -52,7 +56,7 @@ class QuartermasterApp:
 
         self._config = load_config(self._config_path)
         self._events = EventBus()
-        self._tools = ToolRegistry()
+        self._tools = ToolRegistry(events=self._events)
 
         self._db = Database(self._config.database)
         await self._db.connect()
@@ -133,6 +137,27 @@ class QuartermasterApp:
         self._discover_plugins()
         await self._plugin_loader.load_all(ctx)
 
+        # Start MCP client (connects to external servers, registers tools)
+        if self._config.mcp.clients:
+            self._mcp_client = MCPClientManager(
+                config=self._config.mcp,
+                tools=self._tools,
+                events=self._events,
+            )
+            await self._mcp_client.start()
+            ctx.mcp_client = self._mcp_client
+
+        # Start MCP server (exposes tools to external clients)
+        if self._config.mcp.server and self._config.mcp.server.enabled:
+            self._mcp_server = MCPServer(
+                config=self._config.mcp.server,
+                tools=self._tools,
+                events=self._events,
+                approval=self._approval,
+                transport=self._transport,
+            )
+            await self._mcp_server.start()
+
         await self._transport.start_all()
         await self._scheduler.start()
 
@@ -157,6 +182,10 @@ class QuartermasterApp:
             await self._scheduler.stop()
         if self._transport:
             await self._transport.stop_all()
+        if self._mcp_server:
+            await self._mcp_server.stop()
+        if self._mcp_client:
+            await self._mcp_client.stop()
         if self._plugin_loader:
             await self._plugin_loader.teardown_all()
         if self._metrics_runner:

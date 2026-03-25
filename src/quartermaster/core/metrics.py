@@ -65,6 +65,43 @@ budget_limit_usd = Gauge(
     "Monthly API budget limit in USD",
 )
 
+# MCP Client metrics
+mcp_client_status = Gauge(
+    "qm_mcp_client_status",
+    "MCP client connection status (1=up, 0=down, 0.5=degraded)",
+    ["server"],
+)
+mcp_client_reconnect_total = Counter(
+    "qm_mcp_client_reconnect_total",
+    "Total MCP client reconnection attempts",
+    ["server"],
+)
+mcp_tool_calls_total = Counter(
+    "qm_mcp_tool_calls_total",
+    "Total MCP remote tool calls",
+    ["server", "tool", "status"],
+)
+mcp_tool_call_duration = Histogram(
+    "qm_mcp_tool_call_duration_seconds",
+    "MCP remote tool call duration",
+    ["server", "tool"],
+)
+
+# MCP Server metrics
+mcp_server_requests_total = Counter(
+    "qm_mcp_server_requests_total",
+    "Total MCP server requests",
+    ["method", "status"],
+)
+mcp_server_connected_clients = Gauge(
+    "qm_mcp_server_connected_clients",
+    "Number of connected MCP clients",
+)
+mcp_server_auth_failures_total = Counter(
+    "qm_mcp_server_auth_failures_total",
+    "Total MCP server authentication failures",
+)
+
 
 async def metrics_handler(request: web.Request) -> web.Response:
     """HTTP handler for /metrics endpoint."""

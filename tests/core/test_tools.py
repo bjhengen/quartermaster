@@ -1,6 +1,7 @@
 """Tests for the Tool Registry."""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from quartermaster.core.tools import ApprovalTier, ToolRegistry
 
@@ -126,3 +127,149 @@ async def test_tool_execution_error_returns_error_dict() -> None:
     result = await registry.execute("fail.tool", {})
     assert "error" in result
     assert "connection refused" in result["error"]
+
+
+def test_tool_definition_source_default() -> None:
+    """New tools default to source='local'."""
+    registry = ToolRegistry()
+
+    async def handler(params: dict) -> dict:
+        return {}
+
+    registry.register(name="test.tool", description="Test", parameters={}, handler=handler)
+    tool = registry.get("test.tool")
+    assert tool is not None
+    assert tool.source == "local"
+
+
+def test_tool_definition_source_custom() -> None:
+    """Tools can be registered with a custom source."""
+    registry = ToolRegistry()
+
+    async def handler(params: dict) -> dict:
+        return {}
+
+    registry.register(
+        name="remote.tool", description="Remote", parameters={},
+        handler=handler, source="claude-memory",
+    )
+    tool = registry.get("remote.tool")
+    assert tool is not None
+    assert tool.source == "claude-memory"
+    assert tool.is_remote is True
+
+
+def test_tool_definition_is_remote_property() -> None:
+    """is_remote is True for non-local sources."""
+    registry = ToolRegistry()
+
+    async def handler(params: dict) -> dict:
+        return {}
+
+    registry.register(name="local.tool", description="Local", parameters={}, handler=handler)
+    registry.register(
+        name="remote.tool", description="Remote", parameters={},
+        handler=handler, source="some-server",
+    )
+    assert registry.get("local.tool").is_remote is False
+    assert registry.get("remote.tool").is_remote is True
+
+
+@pytest.mark.asyncio
+async def test_unregister_tool() -> None:
+    """unregister() removes a tool from the registry."""
+    registry = ToolRegistry()
+
+    async def handler(params: dict) -> dict:
+        return {}
+
+    registry.register(name="temp.tool", description="Temporary", parameters={}, handler=handler)
+    assert registry.get("temp.tool") is not None
+
+    registry.unregister("temp.tool")
+    assert registry.get("temp.tool") is None
+
+
+def test_unregister_nonexistent_raises() -> None:
+    """unregister() raises KeyError for unknown tools."""
+    registry = ToolRegistry()
+    with pytest.raises(KeyError, match="no.such.tool"):
+        registry.unregister("no.such.tool")
+
+
+def test_list_by_source() -> None:
+    """list_by_source() filters tools by their source."""
+    registry = ToolRegistry()
+
+    async def handler(params: dict) -> dict:
+        return {}
+
+    registry.register(name="a.local", description="A", parameters={}, handler=handler)
+    registry.register(
+        name="b.remote", description="B", parameters={},
+        handler=handler, source="server-b",
+    )
+    registry.register(
+        name="c.remote", description="C", parameters={},
+        handler=handler, source="server-b",
+    )
+    registry.register(
+        name="d.other", description="D", parameters={},
+        handler=handler, source="server-d",
+    )
+
+    local_tools = registry.list_by_source("local")
+    assert len(local_tools) == 1
+    assert local_tools[0].name == "a.local"
+
+    server_b_tools = registry.list_by_source("server-b")
+    assert len(server_b_tools) == 2
+    names = {t.name for t in server_b_tools}
+    assert names == {"b.remote", "c.remote"}
+
+
+@pytest.mark.asyncio
+async def test_register_emits_event() -> None:
+    """register() emits tools.registry_changed when EventBus provided."""
+    events = MagicMock()
+    events.emit = AsyncMock()
+    registry = ToolRegistry(events=events)
+
+    async def handler(params: dict) -> dict:
+        return {}
+
+    registry.register(name="test.tool", description="Test", parameters={}, handler=handler)
+    events.emit.assert_called_once_with(
+        "tools.registry_changed", {"action": "registered", "tool": "test.tool"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_unregister_emits_event() -> None:
+    """unregister() emits tools.registry_changed when EventBus provided."""
+    events = MagicMock()
+    events.emit = AsyncMock()
+    registry = ToolRegistry(events=events)
+
+    async def handler(params: dict) -> dict:
+        return {}
+
+    registry.register(name="test.tool", description="Test", parameters={}, handler=handler)
+    events.emit.reset_mock()
+
+    registry.unregister("test.tool")
+    events.emit.assert_called_once_with(
+        "tools.registry_changed", {"action": "unregistered", "tool": "test.tool"}
+    )
+
+
+def test_no_event_emission_without_eventbus() -> None:
+    """register/unregister work without EventBus (backward compat)."""
+    registry = ToolRegistry()  # no events
+
+    async def handler(params: dict) -> dict:
+        return {}
+
+    # Should not raise
+    registry.register(name="test.tool", description="Test", parameters={}, handler=handler)
+    registry.unregister("test.tool")
