@@ -103,6 +103,17 @@ class MCPClientManager:
                     pass
         self._reconnect_tasks.clear()
 
+        # Close sessions (exits the receive loop task group)
+        for server_name, session in list(self._sessions.items()):
+            try:
+                await session.__aexit__(None, None, None)
+            except Exception as exc:
+                logger.warning(
+                    "mcp_session_cleanup_error",
+                    server=server_name,
+                    error=str(exc),
+                )
+
         # Clean up transport context managers
         for server_name, ctx in list(self._transport_contexts.items()):
             try:
@@ -220,7 +231,11 @@ class MCPClientManager:
         else:
             raise ValueError(f"Unknown transport type: {transport_type!r}")
 
+        # ClientSession is an async context manager that starts the receive
+        # loop in __aenter__. Without entering it, initialize() hangs waiting
+        # for a response that never arrives.
         session = ClientSession(read_stream, write_stream)
+        await session.__aenter__()
         await session.initialize()
         return session
 
