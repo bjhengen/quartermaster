@@ -50,9 +50,8 @@ class MCPClientEntry(BaseModel):
         if self.transport == TransportType.STDIO:
             if not self.command:
                 raise ValueError("stdio transport requires 'command'")
-        elif self.transport in (TransportType.STREAMABLE_HTTP, TransportType.SSE):
-            if not self.url:
-                raise ValueError(f"{self.transport} transport requires 'url'")
+        elif self.transport in (TransportType.STREAMABLE_HTTP, TransportType.SSE) and not self.url:
+            raise ValueError(f"{self.transport} transport requires 'url'")
         return self
 
 

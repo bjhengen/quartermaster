@@ -4,14 +4,14 @@ Tests the full round-trip: Tool Registry → bridge → transport → protocol.
 """
 
 import sys
-import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from quartermaster.core.tools import ToolRegistry
 from quartermaster.mcp.client import MCPClientManager
 from quartermaster.mcp.config import MCPClientEntry, MCPConfig, TransportType
-
 
 ECHO_SERVER = str(Path(__file__).parent.parent / "fixtures" / "echo_server.py")
 

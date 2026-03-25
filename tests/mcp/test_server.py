@@ -1,9 +1,9 @@
 """Tests for MCP Server."""
 
-import json
-import pytest
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from quartermaster.core.tools import ApprovalTier, ToolRegistry
 from quartermaster.mcp.config import MCPServerConfig

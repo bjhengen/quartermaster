@@ -1,14 +1,14 @@
 """Tests for MCP Client Manager."""
 
-import pytest
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from mcp.types import Tool as MCPTool, ListToolsResult, CallToolResult, TextContent
+import pytest
+from mcp.types import ListToolsResult
+from mcp.types import Tool as MCPTool
 
 from quartermaster.core.tools import ApprovalTier, ToolRegistry
 from quartermaster.mcp.client import MCPClientManager
-from quartermaster.mcp.config import MCPClientEntry, MCPConfig, TransportType, ToolOverride
+from quartermaster.mcp.config import MCPClientEntry, MCPConfig, ToolOverride, TransportType
 
 
 @pytest.fixture
@@ -114,10 +114,11 @@ async def test_approval_tier_override(
         events=mock_events,
     )
 
+    empty_schema = {"type": "object", "properties": {}}
     mock_tools = [
-        MCPTool(name="safe_tool", description="Safe", inputSchema={"type": "object", "properties": {}}),
-        MCPTool(name="dangerous_tool", description="Dangerous", inputSchema={"type": "object", "properties": {}}),
-        MCPTool(name="hidden_tool", description="Hidden", inputSchema={"type": "object", "properties": {}}),
+        MCPTool(name="safe_tool", description="Safe", inputSchema=empty_schema),
+        MCPTool(name="dangerous_tool", description="Dangerous", inputSchema=empty_schema),
+        MCPTool(name="hidden_tool", description="Hidden", inputSchema=empty_schema),
     ]
 
     mock_session = AsyncMock()
@@ -190,7 +191,11 @@ async def test_name_collision_skips_remote(
     )
 
     mock_tools = [
-        MCPTool(name="search", description="Remote version", inputSchema={"type": "object", "properties": {}}),
+        MCPTool(
+            name="search",
+            description="Remote version",
+            inputSchema={"type": "object", "properties": {}},
+        ),
     ]
 
     mock_session = AsyncMock()

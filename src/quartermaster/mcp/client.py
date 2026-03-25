@@ -8,8 +8,8 @@ on failure with exponential backoff, and cleanly disconnecting on shutdown.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -26,11 +26,11 @@ from quartermaster.core.metrics import (
 )
 from quartermaster.core.tools import ApprovalTier, ToolRegistry
 from quartermaster.mcp.bridge import mcp_result_to_dict, mcp_tool_to_definition
-from quartermaster.mcp.config import MCPClientEntry, MCPConfig, TransportType
 from quartermaster.mcp.transports import MCPTransportFactory
 
 if TYPE_CHECKING:
     from quartermaster.core.events import EventBus
+    from quartermaster.mcp.config import MCPClientEntry, MCPConfig
 
 logger = structlog.get_logger()
 
@@ -94,13 +94,11 @@ class MCPClientManager:
     async def stop(self) -> None:
         """Disconnect from all servers and clean up resources."""
         # Cancel pending reconnect tasks
-        for server_name, task in list(self._reconnect_tasks.items()):
+        for _server_name, task in list(self._reconnect_tasks.items()):
             if not task.done():
                 task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-                except (asyncio.CancelledError, Exception):
-                    pass
         self._reconnect_tasks.clear()
 
         # Close sessions (exits the receive loop task group)
@@ -159,7 +157,11 @@ class MCPClientManager:
     ) -> None:
         """Update the status dict and Prometheus gauge for a server."""
         if server_name not in self._server_statuses:
-            self._server_statuses[server_name] = {"status": "disconnected", "tool_count": 0, "error": None}
+            self._server_statuses[server_name] = {
+                "status": "disconnected",
+                "tool_count": 0,
+                "error": None,
+            }
 
         self._server_statuses[server_name]["status"] = status
         if error is not None:
@@ -317,10 +319,8 @@ class MCPClientManager:
         """Remove all tools registered from a given server."""
         tools = self._tools.list_by_source(server_name)
         for tool in tools:
-            try:
+            with contextlib.suppress(KeyError):
                 self._tools.unregister(tool.name)
-            except KeyError:
-                pass
         if tools:
             logger.info(
                 "mcp_server_tools_unregistered",

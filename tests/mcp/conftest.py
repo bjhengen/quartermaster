@@ -1,7 +1,8 @@
 """Shared fixtures for MCP tests."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from quartermaster.core.tools import ToolRegistry
 

@@ -1,7 +1,8 @@
 """Tests for MCP transport factory."""
 
-import pytest
 from typing import Any
+
+import pytest
 
 from quartermaster.mcp.config import MCPClientEntry, TransportType
 from quartermaster.mcp.transports import MCPTransportFactory

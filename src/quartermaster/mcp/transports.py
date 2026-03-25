@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-
 from mcp.client.stdio import StdioServerParameters
+
 from quartermaster.mcp.config import MCPClientEntry, TransportType
 
 logger = structlog.get_logger()
