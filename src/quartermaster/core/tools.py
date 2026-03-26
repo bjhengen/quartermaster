@@ -68,7 +68,8 @@ class ToolRegistry:
     ) -> None:
         """Register a tool."""
         if name in self._tools:
-            raise ValueError(f"Tool '{name}' already registered")
+            logger.warning("tool_name_collision", tool=name, source=source)
+            return
         self._tools[name] = ToolDefinition(
             name=name,
             description=description,

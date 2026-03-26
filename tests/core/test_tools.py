@@ -105,15 +105,24 @@ def test_get_schemas_for_llm() -> None:
     assert schemas[0]["type"] == "function"
 
 
-def test_duplicate_registration_raises() -> None:
+def test_duplicate_registration_skips() -> None:
+    """Duplicate registration logs a warning and skips (no crash)."""
     registry = ToolRegistry()
 
-    async def handler(params: dict) -> dict:
-        return {}
+    async def handler1(params: dict) -> dict:
+        return {"v": 1}
 
-    registry.register(name="dup", description="First", parameters={}, handler=handler)
-    with pytest.raises(ValueError, match="already registered"):
-        registry.register(name="dup", description="Second", parameters={}, handler=handler)
+    async def handler2(params: dict) -> dict:
+        return {"v": 2}
+
+    registry.register(name="dup", description="First", parameters={}, handler=handler1)
+    # Second registration with same name should be silently skipped
+    registry.register(name="dup", description="Second", parameters={}, handler=handler2)
+
+    # Original tool is preserved
+    tool = registry.get("dup")
+    assert tool is not None
+    assert tool.description == "First"
 
 
 @pytest.mark.asyncio

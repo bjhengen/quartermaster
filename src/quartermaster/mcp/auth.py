@@ -7,6 +7,7 @@ the same interface.
 
 from __future__ import annotations
 
+import hmac
 import ipaddress
 from collections.abc import Awaitable, Callable
 
@@ -14,6 +15,8 @@ import structlog
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+
+from quartermaster.core.metrics import mcp_server_auth_failures_total
 
 # Type alias for the Starlette call_next callable used in BaseHTTPMiddleware
 _CallNext = Callable[[Request], Awaitable[Response]]
@@ -46,17 +49,20 @@ class BearerTokenAuth:
         # Check IP allowlist (if configured)
         if self._allowed_hosts and not self._check_host(client_ip):
             logger.warning("mcp_auth_ip_rejected", client_ip=client_ip)
+            mcp_server_auth_failures_total.inc()
             return Response(status_code=403)
 
         # Check bearer token
         auth_header = request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
             logger.warning("mcp_auth_missing_token", client_ip=client_ip)
+            mcp_server_auth_failures_total.inc()
             return Response(status_code=401)
 
         token = auth_header[7:]  # Strip "Bearer "
-        if token != self._token:
+        if not hmac.compare_digest(token, self._token):
             logger.warning("mcp_auth_invalid_token", client_ip=client_ip)
+            mcp_server_auth_failures_total.inc()
             return Response(status_code=401)
 
         return await call_next(request)

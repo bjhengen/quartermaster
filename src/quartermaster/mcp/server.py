@@ -27,7 +27,10 @@ from starlette.applications import Starlette
 from starlette.routing import Mount
 
 from quartermaster.core.approval import ApprovalRequest, ApprovalStatus
-from quartermaster.core.metrics import mcp_server_requests_total
+from quartermaster.core.metrics import (
+    mcp_server_connected_clients,
+    mcp_server_requests_total,
+)
 from quartermaster.core.tools import ApprovalTier, ToolRegistry
 from quartermaster.mcp.auth import BearerTokenAuth
 from quartermaster.mcp.bridge import definition_to_mcp_tool, dict_to_mcp_result
@@ -143,10 +146,11 @@ class MCPServer:
         self._uvicorn_server = uvicorn.Server(uvi_config)
 
         # Start in background task
-        self._serve_task = asyncio.get_event_loop().create_task(
+        self._serve_task = asyncio.get_running_loop().create_task(
             self._uvicorn_server.serve()
         )
 
+        mcp_server_connected_clients.set(0)
         logger.info(
             "mcp_server_started",
             host=self._config.bind,
@@ -186,8 +190,9 @@ class MCPServer:
         async def handle_call_tool(
             name: str, arguments: dict[str, Any]
         ) -> list[TextContent]:
-            mcp_server_requests_total.labels(method="call_tool", status="ok").inc()
             result = await self._handle_tool_call(name, arguments or {})
+            status = "error" if "error" in result else "ok"
+            mcp_server_requests_total.labels(method="call_tool", status=status).inc()
             return dict_to_mcp_result(result)
 
     # ------------------------------------------------------------------

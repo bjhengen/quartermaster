@@ -172,6 +172,23 @@ class MCPClientManager:
         gauge_value = 1.0 if status == "connected" else (0.5 if status == "degraded" else 0.0)
         mcp_client_status.labels(server=server_name).set(gauge_value)
 
+        # Emit health_changed event for monitoring
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                self._events.emit(
+                    "mcp.client.health_changed",
+                    {
+                        "component": "mcp-client",
+                        "server": server_name,
+                        "status": status,
+                        "tool_count": self._server_statuses[server_name].get("tool_count", 0),
+                    },
+                )
+            )
+        except RuntimeError:
+            pass
+
     async def _connect_server(self, server_name: str, entry: MCPClientEntry) -> None:
         """Attempt to connect to a single MCP server and register its tools."""
         logger.info("mcp_client_connecting", server=server_name, transport=entry.transport)
@@ -347,6 +364,10 @@ class MCPClientManager:
                 delay=delay,
             )
             try:
+                # Unregister stale tools from previous connection before
+                # re-registering — prevents ValueError on duplicate names
+                # and ensures handlers point to the new live session.
+                self._unregister_server_tools(server_name)
                 session = await self._create_session(server_name, entry)
                 self._sessions[server_name] = session
                 await self._register_server_tools(server_name, session, entry)

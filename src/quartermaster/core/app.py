@@ -120,6 +120,17 @@ class QuartermasterApp:
             self._config.metrics.port
         )
 
+        # Create MCP server (not started yet — no tools registered)
+        if self._config.mcp.server and self._config.mcp.server.enabled:
+            self._mcp_server = MCPServer(
+                config=self._config.mcp.server,
+                tools=self._tools,
+                events=self._events,
+                approval=self._approval,
+                transport=self._transport,
+                approval_timeout_secs=self._config.approval.default_timeout_minutes * 60,
+            )
+
         ctx = PluginContext(
             config=self._config,
             events=self._events,
@@ -147,15 +158,8 @@ class QuartermasterApp:
             await self._mcp_client.start()
             ctx.mcp_client = self._mcp_client
 
-        # Start MCP server (exposes tools to external clients)
-        if self._config.mcp.server and self._config.mcp.server.enabled:
-            self._mcp_server = MCPServer(
-                config=self._config.mcp.server,
-                tools=self._tools,
-                events=self._events,
-                approval=self._approval,
-                transport=self._transport,
-            )
+        # Start MCP server (full tool set now available)
+        if self._mcp_server is not None:
             await self._mcp_server.start()
 
         await self._transport.start_all()

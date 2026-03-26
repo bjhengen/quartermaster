@@ -84,9 +84,19 @@ class CommandsPlugin(QuartermasterPlugin):
             status_lines.append("\n**MCP Clients:**")
             for name, status in self._ctx.mcp_client.get_server_statuses().items():
                 status_lines.append(
-                    f"  {name} ({status['transport']}): "
-                    f"{status['status']} — {status['tools']} tools"
+                    f"  {name}: {status['status']}"
+                    f" — {status.get('tool_count', 0)} tools"
                 )
+
+        # MCP server status
+        tools = self._ctx.tools.list_tools()
+        tool_count = len(tools)
+        if hasattr(self._ctx, "config") and self._ctx.config.mcp.server.enabled:
+            port = self._ctx.config.mcp.server.port
+            status_lines.append(
+                f"\n**MCP Server:**\n"
+                f"  Streamable HTTP on :{port} — {tool_count} tools exposed"
+            )
 
         await self._send(msg, "\n".join(status_lines))
 
