@@ -11,7 +11,6 @@ from mcp.server.lowlevel.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-
 server = Server("echo-test")
 
 

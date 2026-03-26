@@ -1,7 +1,8 @@
 """Tests for the Tool Registry."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from quartermaster.core.tools import ApprovalTier, ToolRegistry
 

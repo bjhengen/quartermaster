@@ -22,7 +22,8 @@ async def test_database_connect_and_close(db_config: DatabaseConfig) -> None:
     """Test that database can connect and close (mocked)."""
     with patch("quartermaster.core.database.oracledb") as mock_ora:
         mock_pool = MagicMock()
-        mock_ora.create_pool_async = AsyncMock(return_value=mock_pool)
+        # create_pool_async is synchronous in oracledb 3.4.2 — returns pool directly
+        mock_ora.create_pool_async = MagicMock(return_value=mock_pool)
         mock_pool.close = AsyncMock()
 
         db = Database(db_config)
@@ -41,13 +42,15 @@ async def test_database_execute(db_config: DatabaseConfig) -> None:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
 
-        mock_ora.create_pool_async = AsyncMock(return_value=mock_pool)
+        # create_pool_async is synchronous in oracledb 3.4.2
+        mock_ora.create_pool_async = MagicMock(return_value=mock_pool)
         mock_pool.acquire = AsyncMock(return_value=mock_conn)
         mock_pool.release = AsyncMock()
         mock_conn.cursor = MagicMock(return_value=mock_cursor)
         mock_cursor.execute = AsyncMock()
         mock_cursor.fetchall = AsyncMock(return_value=[(1, "test")])
-        mock_cursor.close = AsyncMock()
+        # cursor.close() is synchronous in oracledb 3.4.2
+        mock_cursor.close = MagicMock()
 
         db = Database(db_config)
         await db.connect()
