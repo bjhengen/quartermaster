@@ -88,3 +88,38 @@ def test_empty_allowlist_allows_all() -> None:
 
     response = client.get("/test", headers={"Authorization": "Bearer secret-token-123"})
     assert response.status_code == 200
+
+
+def test_auth_failures_increment_metric() -> None:
+    """Auth rejections increment mcp_server_auth_failures_total."""
+    from quartermaster.core.metrics import mcp_server_auth_failures_total
+
+    auth = BearerTokenAuth(token="secret-token-123", allowed_hosts=[])
+    app = _make_app(auth)
+    client = TestClient(app)
+
+    before = mcp_server_auth_failures_total._value.get()
+
+    # Missing token → 401
+    client.get("/test")
+    # Wrong token → 401
+    client.get("/test", headers={"Authorization": "Bearer wrong"})
+
+    after = mcp_server_auth_failures_total._value.get()
+    assert after - before == 2
+
+
+def test_ip_rejection_increments_metric() -> None:
+    """IP allowlist rejection increments mcp_server_auth_failures_total."""
+    from quartermaster.core.metrics import mcp_server_auth_failures_total
+
+    auth = BearerTokenAuth(token="secret-token-123", allowed_hosts=["10.0.0.0/8"])
+    app = _make_app(auth)
+    client = TestClient(app)
+
+    before = mcp_server_auth_failures_total._value.get()
+
+    client.get("/test", headers={"Authorization": "Bearer secret-token-123"})
+
+    after = mcp_server_auth_failures_total._value.get()
+    assert after - before == 1

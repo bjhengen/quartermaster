@@ -220,3 +220,42 @@ def test_get_server_statuses(
     statuses = mgr.get_server_statuses()
     assert "test-server" in statuses
     assert statuses["test-server"]["status"] == "disconnected"
+
+
+@pytest.mark.asyncio
+async def test_reregister_after_unregister(
+    tool_registry: ToolRegistry, mock_events: MagicMock, mcp_config: MCPConfig
+) -> None:
+    """Simulates reconnect: unregister old tools, then re-register with new session."""
+    mgr = MCPClientManager(
+        config=mcp_config,
+        tools=tool_registry,
+        events=mock_events,
+    )
+
+    schema = {"type": "object", "properties": {}}
+    mock_tools = [MCPTool(name="search", description="Search v1", inputSchema=schema)]
+
+    session1 = AsyncMock()
+    session1.list_tools = AsyncMock(return_value=ListToolsResult(tools=mock_tools))
+
+    # Register tools from first session
+    await mgr._register_server_tools(
+        "test-server", session1, mcp_config.clients["test-server"]
+    )
+    tool = tool_registry.get("test-server.search")
+    assert tool is not None
+
+    # Simulate reconnect: unregister, then re-register with new session
+    mgr._unregister_server_tools("test-server")
+    assert tool_registry.get("test-server.search") is None
+
+    session2 = AsyncMock()
+    session2.list_tools = AsyncMock(return_value=ListToolsResult(tools=mock_tools))
+
+    await mgr._register_server_tools(
+        "test-server", session2, mcp_config.clients["test-server"]
+    )
+    tool = tool_registry.get("test-server.search")
+    assert tool is not None
+    assert tool.source == "test-server"
