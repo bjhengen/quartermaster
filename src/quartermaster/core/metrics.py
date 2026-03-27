@@ -101,6 +101,18 @@ mcp_server_auth_failures_total = Counter(
     "Total MCP server authentication failures",
 )
 
+# Email metrics
+email_operations_total = Counter(
+    "qm_email_operations_total",
+    "Total email operations",
+    ["account", "operation", "status"],
+)
+email_operation_duration = Histogram(
+    "qm_email_operation_duration_seconds",
+    "Email operation duration",
+    ["account", "operation"],
+)
+
 
 async def metrics_handler(request: web.Request) -> web.Response:
     """HTTP handler for /metrics endpoint."""

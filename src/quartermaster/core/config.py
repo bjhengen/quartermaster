@@ -79,6 +79,20 @@ class LoggingConfig(BaseModel):
     format: str = "json"
 
 
+class EmailAccountConfig(BaseModel):
+    """Configuration for a single email account."""
+
+    provider: str  # "gmail", future: "outlook"
+    credential_file: str
+    label: str
+
+
+class EmailConfig(BaseModel):
+    """Email integration configuration."""
+
+    accounts: dict[str, EmailAccountConfig] = {}
+
+
 class QuartermasterConfig(BaseModel):
     """Root configuration model."""
 
@@ -94,6 +108,7 @@ class QuartermasterConfig(BaseModel):
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    email: EmailConfig = Field(default_factory=EmailConfig)
     persona: str = ""
     plugins_dir: str = "/app/plugins"
 

@@ -145,6 +145,7 @@ class QuartermasterApp:
         )
 
         self._plugin_loader = PluginLoader()
+        ctx.plugin_loader = self._plugin_loader
         self._discover_plugins()
         await self._plugin_loader.load_all(ctx)
 
@@ -173,10 +174,12 @@ class QuartermasterApp:
         from plugins.briefing.plugin import BriefingPlugin
         from plugins.chat.plugin import ChatPlugin
         from plugins.commands.plugin import CommandsPlugin
+        from plugins.email.plugin import EmailPlugin
 
         self._plugin_loader.register_class(ChatPlugin)
         self._plugin_loader.register_class(CommandsPlugin)
         self._plugin_loader.register_class(BriefingPlugin)
+        self._plugin_loader.register_class(EmailPlugin)
 
     async def stop(self) -> None:
         """Gracefully shut down all services."""
