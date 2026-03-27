@@ -246,3 +246,22 @@ class ChatPlugin(QuartermasterPlugin):
                 text=final_text,
             )
         )
+
+        # Save conversation turns — user message + final assistant response.
+        # Intermediate tool calls are not persisted individually; the final
+        # summary from the LLM captures the outcome for context continuity.
+        await self._ctx.conversation.save_turn(
+            conv,
+            Turn(role="user", content=original_message.text),
+        )
+        await self._ctx.conversation.save_turn(
+            conv,
+            Turn(
+                role="assistant",
+                content=final_text,
+                llm_backend=current_response.model,
+                tokens_in=current_response.tokens_in,
+                tokens_out=current_response.tokens_out,
+                estimated_cost=current_response.estimated_cost,
+            ),
+        )

@@ -2,7 +2,6 @@
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -38,20 +37,22 @@ class ConversationManager:
         self, transport: str, chat_id: str
     ) -> Conversation:
         """Get the active conversation for a chat, or create a new one."""
-        cutoff = datetime.now(UTC) - timedelta(
-            hours=self._config.idle_timeout_hours
-        )
-
+        # Use Oracle's systimestamp for the cutoff — avoids timezone mismatch
+        # between Python UTC and Oracle's local-time TIMESTAMP columns.
         row = await self._db.fetch_one(
             """SELECT conversation_id, transport, external_chat_id,
                       created_at, last_active_at
                FROM qm.conversations
                WHERE transport = :transport
                  AND external_chat_id = :chat_id
-                 AND last_active_at > :cutoff
+                 AND last_active_at > systimestamp - NUMTODSINTERVAL(:hours, 'HOUR')
                ORDER BY last_active_at DESC
                FETCH FIRST 1 ROW ONLY""",
-            {"transport": transport, "chat_id": chat_id, "cutoff": cutoff},
+            {
+                "transport": transport,
+                "chat_id": chat_id,
+                "hours": self._config.idle_timeout_hours,
+            },
         )
 
         if row:
