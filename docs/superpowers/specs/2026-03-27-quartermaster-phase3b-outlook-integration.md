@@ -9,7 +9,7 @@
 
 ## 1. Overview
 
-Phase 3b adds Outlook/O365 email integration as the second email provider. Two accounts under the same GoDaddy M365 tenant (`brian@friendly-robots.com` and `support@friendly-robots.com`) are wired into the existing unified email plugin. No plugin changes beyond registering the new provider class — all tools, routing, metrics, and health reporting work automatically.
+Phase 3b adds Outlook/O365 email integration as the second email provider. Two accounts under the same GoDaddy M365 tenant (`brian@friendly-robots.com` and `support@friendly-robots.com`) are wired into the existing unified email plugin. Minimal plugin changes — register the new provider class, add `provider_type` and `close()` to the protocol, fix health reporting. All tools, routing, metrics, and aggregation work automatically.
 
 ### Goals
 
@@ -17,7 +17,7 @@ Phase 3b adds Outlook/O365 email integration as the second email provider. Two a
 - Two O365 accounts operational (same tenant, one Azure AD app registration)
 - Same capabilities as Gmail: search, read, send, draft, reply
 - MSAL device code flow for headless-friendly OAuth setup
-- Zero changes to email plugin tool interface
+- Minimal plugin changes: register new provider, fix health reporting, add provider cleanup
 
 ### Non-Goals
 
@@ -36,8 +36,8 @@ Phase 3b adds Outlook/O365 email integration as the second email provider. Two a
 | Graph API version | v1.0 | Stable; beta not needed for Mail operations |
 | OAuth flow | Device code (setup) + refresh token (runtime) | Headless-friendly — no browser needed on slmbeast |
 | App registration | Single app, Public client type | One registration serves both accounts; delegated permissions |
-| Token persistence | Credential JSON files in `credentials/` | Consistent with Gmail provider pattern |
-| MSAL token cache | Not used — refresh token stored in credential file | Simpler than MSAL's serialized cache; matches Gmail's approach |
+| Token persistence | MSAL `SerializableTokenCache` saved as credential JSON | MSAL manages refresh tokens internally; we persist the cache to disk |
+| Provider cleanup | `close()` method on `EmailProvider` protocol | Closes `httpx.AsyncClient`; plugin calls on teardown |
 
 ---
 
@@ -68,18 +68,16 @@ Same `EmailAccountConfig` model — `provider: outlook` triggers `OutlookProvide
 {
   "client_id": "...",
   "tenant_id": "...",
-  "client_secret": "",
-  "refresh_token": "...",
-  "email_address": "brian@friendly-robots.com"
+  "email_address": "brian@friendly-robots.com",
+  "token_cache": "...serialized MSAL cache JSON..."
 }
 ```
 
 - `client_id` and `tenant_id` — from the Entra app registration
-- `client_secret` — empty string for public client apps (device code flow doesn't use secrets)
-- `refresh_token` — acquired during setup, refreshed at runtime
-- `email_address` — identifies the mailbox; used in health check logging
+- `email_address` — identifies the mailbox; used in logging and `/status`
+- `token_cache` — serialized MSAL `SerializableTokenCache` containing access and refresh tokens. MSAL manages token lifecycle internally; the provider persists the cache when `cache.has_state_changed` is true.
 
-Written by the OAuth setup script. Read at startup. Refresh token updated atomically when MSAL issues a new one.
+Written by the OAuth setup script. Updated at runtime via atomic write when MSAL refreshes tokens.
 
 ---
 
@@ -112,15 +110,29 @@ New file at `src/quartermaster/email/outlook.py`.
 
 ### Auth & Token Management
 
-- `connect()` — loads credential file, uses MSAL `PublicClientApplication` to acquire token by refresh token via `acquire_token_by_refresh_token()`. Wraps in `asyncio.to_thread()` since MSAL is synchronous. Stores the access token for Graph API calls. If refresh yields a new refresh token, persists it atomically.
-- Token refresh is handled per-request: before each Graph API call, check if the access token is still valid. If expired, re-acquire silently via MSAL.
+Uses MSAL's `SerializableTokenCache` for token lifecycle — not raw refresh token manipulation. MSAL manages access token expiry, refresh token rotation, and cache state internally.
+
+- `connect()` — loads credential file (which contains a serialized MSAL token cache). Creates `PublicClientApplication` with the cache attached. Calls `acquire_token_silent()` to get a valid access token (MSAL handles refresh if needed). Wraps in `asyncio.to_thread()` since MSAL is synchronous. If `cache.has_state_changed`, persists the updated cache back to the credential file atomically.
+- `_get_token()` — called before each Graph API request. Calls `acquire_token_silent()` via `asyncio.to_thread()`. If the access token is still valid, MSAL returns it from cache instantly. If expired, MSAL refreshes silently. Persists cache if state changed. Returns the access token string for the `Authorization: Bearer` header.
+- The credential file stores the full MSAL serialized cache (JSON) plus `client_id`, `tenant_id`, and `email_address` metadata. The OAuth setup script creates this file initially; the provider updates it at runtime when tokens refresh.
+
+**Credential file format (updated):**
+
+```json
+{
+  "client_id": "...",
+  "tenant_id": "...",
+  "email_address": "brian@friendly-robots.com",
+  "token_cache": "...serialized MSAL cache JSON..."
+}
+```
 
 ### Graph API Endpoints
 
 | Method | Endpoint | Notes |
 |--------|----------|-------|
 | `get_unread_summary` | `GET /me/messages?$filter=isRead eq false&$top={N}&$select=id,subject,from,receivedDateTime,bodyPreview,isRead` | Uses `$select` to minimize payload |
-| `search` | `GET /me/messages?$search="{query}"&$top={N}` | Graph search syntax (KQL) |
+| `search` | `GET /me/messages?$search="{query}"&$top={N}` | Requires `ConsistencyLevel: eventual` header. Graph KQL search syntax. |
 | `read` | `GET /me/messages/{id}` | Full message with body |
 | `send` | `POST /me/sendMail` | JSON body with message object |
 | `draft` | `POST /me/messages` | Creates message as draft (isDraft=true by default) |
@@ -170,7 +182,7 @@ python scripts/outlook_oauth_setup.py \
 
 Flow:
 1. Creates MSAL `PublicClientApplication` with client_id and authority (`https://login.microsoftonline.com/{tenant_id}`)
-2. Initiates device code flow with scopes `Mail.ReadWrite`, `User.Read`, `offline_access`
+2. Initiates device code flow with fully-qualified scopes: `https://graph.microsoft.com/Mail.ReadWrite`, `https://graph.microsoft.com/User.Read`, `offline_access` (Graph-specific scopes require the full URI prefix; `offline_access` is an identity platform scope and does not)
 3. Prints URL and code for user to enter in any browser
 4. Waits for authentication
 5. Extracts `email_address` from the ID token (or calls `/me` endpoint)
@@ -180,9 +192,9 @@ Run once per account. Second run reuses `--client-id` and `--tenant-id`.
 
 ---
 
-## 7. Plugin Changes
+## 7. Plugin and Protocol Changes
 
-One line in `plugins/email/plugin.py`:
+### Provider registration (1 line)
 
 ```python
 from quartermaster.email.outlook import OutlookProvider
@@ -193,7 +205,18 @@ mapping = {
 }
 ```
 
-No other changes. All tool registration, account routing, aggregation, metrics, and health reporting work automatically through the existing provider abstraction.
+### EmailProvider protocol additions
+
+Two additions to `src/quartermaster/email/provider.py`:
+
+1. **`provider_type` property** — returns `"gmail"` or `"outlook"`. Used by `health()` to report the correct provider in `/status` output. Replaces the hard-coded `"provider": "gmail"` in the plugin's health details.
+
+2. **`close()` async method** — called by the plugin's `teardown()` for resource cleanup. The `OutlookProvider` closes its `httpx.AsyncClient`; `GmailProvider` is a no-op (Google SDK uses short-lived HTTP connections).
+
+### Plugin fixes
+
+- `health()` — use `provider.provider_type` instead of hard-coded `"gmail"`
+- `teardown()` — call `await provider.close()` for each provider before clearing
 
 ---
 
@@ -253,7 +276,9 @@ msal>=1.0.0
 |-----------|-------|------|
 | Outlook provider | `src/quartermaster/email/outlook.py` | New |
 | OAuth setup | `scripts/outlook_oauth_setup.py` | New |
-| Plugin | `plugins/email/plugin.py` | Modified (1 line) |
+| Provider protocol | `src/quartermaster/email/provider.py` | Modified (add `provider_type`, `close()`) |
+| Gmail provider | `src/quartermaster/email/gmail.py` | Modified (add `provider_type`, no-op `close()`) |
+| Plugin | `plugins/email/plugin.py` | Modified (register provider, fix health, add teardown cleanup) |
 | Config example | `config/settings.example.yaml` | Modified |
 | Requirements | `requirements.txt` | Modified |
 | Tests | `tests/email/test_outlook.py` | New |
