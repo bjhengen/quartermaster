@@ -140,6 +140,31 @@ def test_convert_messages_tool_result_format() -> None:
     assert tool_result_msg["content"][0]["tool_use_id"] == "call_123"
 
 
+def test_convert_messages_assistant_with_text_and_tool_calls() -> None:
+    """Assistant messages with both text and tool_calls produce mixed content blocks."""
+    messages = [
+        ChatMessage(role="user", content="check email"),
+        ChatMessage(
+            role="assistant",
+            content="Let me check that for you.",
+            tool_calls=[{
+                "id": "call_456",
+                "type": "function",
+                "function": {"name": "email.search", "arguments": '{"query": "is:unread"}'},
+            }],
+        ),
+    ]
+    _, converted = AnthropicClient._convert_messages(messages)
+    assistant_msg = converted[1]
+    assert assistant_msg["role"] == "assistant"
+    content_blocks = assistant_msg["content"]
+    assert len(content_blocks) == 2
+    assert content_blocks[0]["type"] == "text"
+    assert content_blocks[0]["text"] == "Let me check that for you."
+    assert content_blocks[1]["type"] == "tool_use"
+    assert content_blocks[1]["name"] == "email.search"
+
+
 def test_convert_messages_multiple_tool_results_merged() -> None:
     """Multiple consecutive tool results merge into one user message."""
     messages = [

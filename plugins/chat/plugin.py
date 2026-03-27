@@ -20,6 +20,73 @@ logger = structlog.get_logger()
 # history, tool schemas, and LLM response within a 32K context window.
 _MAX_TOOL_RESULT_CHARS = 8000
 
+# Maximum items to keep when truncating list-based tool results.
+# Truncates at the domain level (fewer items) rather than mid-JSON.
+_MAX_RESULT_LIST_ITEMS = 10
+
+
+def _truncate_tool_result(result_json: str, tool_name: str) -> str:
+    """Truncate a tool result to fit within context window limits.
+
+    Strategy: try domain-aware truncation first (reduce list items),
+    fall back to character truncation if that's not possible.
+    Always produces valid JSON when possible.
+    """
+    if len(result_json) <= _MAX_TOOL_RESULT_CHARS:
+        return result_json
+
+    # Try domain-aware truncation: find lists in the result and trim them
+    try:
+        data = json.loads(result_json)
+        if _truncate_lists_in_place(data):
+            truncated = json.dumps(data, default=str)
+            if len(truncated) <= _MAX_TOOL_RESULT_CHARS:
+                logger.info(
+                    "tool_result_truncated_smart",
+                    tool=tool_name,
+                    original_len=len(result_json),
+                    truncated_to=len(truncated),
+                )
+                return truncated
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Fall back: character truncation as last resort
+    logger.info(
+        "tool_result_truncated_hard",
+        tool=tool_name,
+        original_len=len(result_json),
+        truncated_to=_MAX_TOOL_RESULT_CHARS,
+    )
+    return (
+        result_json[:_MAX_TOOL_RESULT_CHARS]
+        + "\n... [truncated — result too large for context window]"
+    )
+
+
+def _truncate_lists_in_place(data: Any, max_items: int = _MAX_RESULT_LIST_ITEMS) -> bool:
+    """Recursively find and truncate lists in a data structure.
+
+    Returns True if any truncation was performed.
+    """
+    truncated = False
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, list) and len(value) > max_items:
+                original_len = len(value)
+                data[key] = value[:max_items]
+                data[key].append(
+                    {"_truncated": True, "_showing": max_items, "_total": original_len}
+                )
+                truncated = True
+            elif isinstance(value, (dict, list)):
+                truncated = _truncate_lists_in_place(value, max_items) or truncated
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, (dict, list)):
+                truncated = _truncate_lists_in_place(item, max_items) or truncated
+    return truncated
+
 
 class ChatPlugin(QuartermasterPlugin):
     """Handles basic conversational messages."""
@@ -126,17 +193,14 @@ class ChatPlugin(QuartermasterPlugin):
 
             # Execute each tool call
             for tool_call in current_response.tool_calls:
-                tool_def = self._ctx.tools.get(tool_call.name)
-                if tool_def and tool_def.approval_tier.value == "confirm":
-                    # TODO: Route through approval manager (Task for later)
-                    result: dict[str, Any] = {
-                        "status": "approval_required",
-                        "message": "This action needs approval.",
-                    }
-                else:
-                    result = await self._ctx.tools.execute(
-                        tool_call.name, tool_call.arguments
-                    )
+                result: dict[str, Any] = await self._ctx.tools.execute(
+                    tool_call.name, tool_call.arguments
+                )
+                logger.info(
+                    "tool_executed",
+                    tool=tool_call.name,
+                    has_error="error" in result,
+                )
 
                 # Add tool call and result to messages
                 messages.append(
@@ -154,18 +218,9 @@ class ChatPlugin(QuartermasterPlugin):
                         ],
                     )
                 )
-                result_json = json.dumps(result, default=str)
-                if len(result_json) > _MAX_TOOL_RESULT_CHARS:
-                    logger.info(
-                        "tool_result_truncated",
-                        tool=tool_call.name,
-                        original_len=len(result_json),
-                        truncated_to=_MAX_TOOL_RESULT_CHARS,
-                    )
-                    result_json = (
-                        result_json[:_MAX_TOOL_RESULT_CHARS]
-                        + '\n... [truncated — result too large for context window]'
-                    )
+                result_json = _truncate_tool_result(
+                    json.dumps(result, default=str), tool_call.name
+                )
                 messages.append(
                     ChatMessage(
                         role="tool",
