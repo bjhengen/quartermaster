@@ -1,6 +1,6 @@
 """Tests for email data models."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from quartermaster.email.models import AttachmentInfo, EmailMessage, EmailSummary
 
@@ -20,7 +20,7 @@ def test_email_summary_minimal() -> None:
 
 
 def test_email_summary_with_date() -> None:
-    dt = datetime(2026, 3, 26, 10, 0, tzinfo=timezone.utc)
+    dt = datetime(2026, 3, 26, 10, 0, tzinfo=UTC)
     summary = EmailSummary(
         id="msg456",
         subject="Meeting Tomorrow",
@@ -52,7 +52,7 @@ def test_email_message_full() -> None:
         sender="ceo@company.com",
         to=["brian@example.com"],
         cc=["team@example.com"],
-        date=datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc),
+        date=datetime(2026, 3, 26, 12, 0, tzinfo=UTC),
         body="Full email body text here.",
         snippet="Full email body...",
         is_read=False,

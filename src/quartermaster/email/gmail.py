@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import tempfile
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from quartermaster.email.models import EmailMessage, EmailSummary  # noqa: F401
+from quartermaster.email.models import AttachmentInfo, EmailMessage, EmailSummary
 
 logger = structlog.get_logger()
 
@@ -96,6 +99,165 @@ class GmailProvider:
                 error=str(exc),
             )
             return False
+
+    # -----------------------------------------------------------------------
+    # Read operations
+    # -----------------------------------------------------------------------
+
+    async def get_unread_summary(self, max_results: int = 20) -> list[EmailSummary]:
+        """Return summaries for unread messages."""
+        return await self.search("is:unread", max_results=max_results)
+
+    async def search(self, query: str, max_results: int = 10) -> list[EmailSummary]:
+        """Search Gmail messages and return summaries."""
+        service = self._service
+
+        def _list() -> list[dict[str, Any]]:
+            resp = cast(
+                "dict[str, Any]",
+                service.users()
+                .messages()
+                .list(userId="me", q=query, maxResults=max_results)
+                .execute(),
+            )
+            return cast("list[dict[str, Any]]", resp.get("messages", []))
+
+        stubs = await asyncio.to_thread(_list)
+        if not stubs:
+            return []
+
+        def _fetch_all() -> list[dict[str, Any]]:
+            results: list[dict[str, Any]] = []
+            for stub in stubs:
+                raw = cast(
+                    "dict[str, Any]",
+                    service.users()
+                    .messages()
+                    .get(userId="me", id=stub["id"], format="full")
+                    .execute(),
+                )
+                results.append(raw)
+            return results
+
+        raws = await asyncio.to_thread(_fetch_all)
+        return [self._parse_summary(raw) for raw in raws]
+
+    async def read(self, message_id: str) -> EmailMessage:
+        """Fetch a full message by ID."""
+        service = self._service
+
+        def _get() -> dict[str, Any]:
+            return cast(
+                "dict[str, Any]",
+                service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="full")
+                .execute(),
+            )
+
+        raw = await asyncio.to_thread(_get)
+        return self._parse_message(raw)
+
+    # -----------------------------------------------------------------------
+    # Parsing helpers
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_headers(raw: dict[str, Any]) -> dict[str, str]:
+        """Return a lowercase-keyed dict of header name → value."""
+        headers: dict[str, str] = {}
+        for h in raw.get("payload", {}).get("headers", []):
+            headers[h["name"].lower()] = h["value"]
+        return headers
+
+    @staticmethod
+    def _parse_date(date_str: str) -> datetime | None:
+        """Parse an RFC 2822 date string to an aware datetime, or None."""
+        if not date_str:
+            return None
+        try:
+            dt = parsedate_to_datetime(date_str)
+            # Ensure UTC-aware
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_address_list(addr_str: str) -> list[str]:
+        """Split a comma-separated address string into a list of stripped addresses."""
+        if not addr_str:
+            return []
+        return [a.strip() for a in addr_str.split(",") if a.strip()]
+
+    @staticmethod
+    def _extract_text_body(payload: dict[str, Any]) -> str:
+        """Recursively extract the first text/plain body part."""
+        mime_type = payload.get("mimeType", "")
+        if mime_type == "text/plain":
+            data = payload.get("body", {}).get("data", "")
+            if data:
+                return base64.urlsafe_b64decode(data + "==").decode(
+                    "utf-8", errors="replace"
+                )
+        for part in payload.get("parts", []):
+            result = GmailProvider._extract_text_body(part)
+            if result:
+                return result
+        return ""
+
+    @staticmethod
+    def _extract_attachments(payload: dict[str, Any]) -> list[AttachmentInfo]:
+        """Recursively collect attachment metadata from payload parts."""
+        attachments: list[AttachmentInfo] = []
+        for part in payload.get("parts", []):
+            filename = part.get("filename", "")
+            if filename:
+                attachments.append(
+                    AttachmentInfo(
+                        filename=filename,
+                        mime_type=part.get("mimeType", "application/octet-stream"),
+                        size=part.get("body", {}).get("size", 0),
+                    )
+                )
+            else:
+                attachments.extend(GmailProvider._extract_attachments(part))
+        return attachments
+
+    def _parse_summary(self, raw: dict[str, Any]) -> EmailSummary:
+        """Convert a raw Gmail message dict to an EmailSummary."""
+        headers = self._extract_headers(raw)
+        label_ids: list[str] = raw.get("labelIds", [])
+        return EmailSummary(
+            id=raw["id"],
+            subject=headers.get("subject", "(no subject)"),
+            sender=headers.get("from", ""),
+            date=self._parse_date(headers.get("date", "")),
+            snippet=raw.get("snippet", ""),
+            is_read="UNREAD" not in label_ids,
+            labels=label_ids,
+        )
+
+    def _parse_message(self, raw: dict[str, Any]) -> EmailMessage:
+        """Convert a raw Gmail full message dict to an EmailMessage."""
+        headers = self._extract_headers(raw)
+        label_ids: list[str] = raw.get("labelIds", [])
+        payload = raw.get("payload", {})
+        return EmailMessage(
+            id=raw["id"],
+            thread_id=raw.get("threadId", ""),
+            subject=headers.get("subject", "(no subject)"),
+            sender=headers.get("from", ""),
+            to=self._parse_address_list(headers.get("to", "")),
+            cc=self._parse_address_list(headers.get("cc", "")),
+            date=self._parse_date(headers.get("date", "")),
+            body=self._extract_text_body(payload),
+            snippet=raw.get("snippet", ""),
+            is_read="UNREAD" not in label_ids,
+            labels=label_ids,
+            attachments=self._extract_attachments(payload),
+        )
 
     def _persist_credentials(self) -> None:
         """Atomically write refreshed credentials back to file.
