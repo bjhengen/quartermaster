@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ class EmailPlugin(QuartermasterPlugin):
     dependencies: list[str] = []
 
     def __init__(self) -> None:
+        self._ctx: PluginContext | None = None
         self._providers: dict[str, GmailProvider] = {}
 
     @staticmethod
@@ -44,6 +46,7 @@ class EmailPlugin(QuartermasterPlugin):
 
     async def setup(self, ctx: PluginContext) -> None:
         """Instantiate providers for each configured account and register tools."""
+        self._ctx = ctx
         email_cfg = ctx.config.email
 
         for account_name, account_cfg in email_cfg.accounts.items():
@@ -244,38 +247,52 @@ class EmailPlugin(QuartermasterPlugin):
     # -----------------------------------------------------------------------
 
     async def health(self) -> HealthReport:
-        """Return health based on live health_check() calls to each provider."""
+        """Return health based on live health_check() calls to each provider.
+
+        Returns rich detail dicts per account so /status can render them:
+        ``{"label": "Personal Gmail", "provider": "gmail", "status": "ok"}``
+        """
         if not self._providers:
             return HealthReport(
                 status=HealthStatus.DOWN,
                 message="No email accounts connected.",
             )
 
-        results: dict[str, bool] = {}
+        details: dict[str, Any] = {}
+        healthy_count = 0
         for account_name, provider in self._providers.items():
-            results[account_name] = await provider.health_check()
+            is_healthy = await provider.health_check()
+            if is_healthy:
+                healthy_count += 1
+            details[account_name] = {
+                "label": provider.label,
+                "provider": "gmail",
+                "status": "ok" if is_healthy else "error",
+                "error": "" if is_healthy else "health check failed",
+            }
 
-        healthy = [k for k, v in results.items() if v]
-        unhealthy = [k for k, v in results.items() if not v]
+        total = len(self._providers)
+        unhealthy_count = total - healthy_count
 
-        if len(unhealthy) == 0:
-            return HealthReport(
-                status=HealthStatus.OK,
-                message=f"All {len(healthy)} account(s) healthy.",
-                details=results,
-            )
-        elif len(healthy) == 0:
-            return HealthReport(
-                status=HealthStatus.DOWN,
-                message=f"All {len(unhealthy)} account(s) are down.",
-                details=results,
-            )
+        if unhealthy_count == 0:
+            status = HealthStatus.OK
+            message = f"All {healthy_count} account(s) healthy."
+        elif healthy_count == 0:
+            status = HealthStatus.DOWN
+            message = f"All {unhealthy_count} account(s) are down."
         else:
-            return HealthReport(
-                status=HealthStatus.DEGRADED,
-                message=f"{len(healthy)} healthy, {len(unhealthy)} down.",
-                details=results,
-            )
+            status = HealthStatus.DEGRADED
+            message = f"{healthy_count} healthy, {unhealthy_count} down."
+
+        # Emit health_changed event on status transitions
+        if self._ctx is not None:
+            with contextlib.suppress(Exception):
+                await self._ctx.events.emit(
+                    "plugin.health_changed",
+                    {"plugin": self.name, "status": status.value, "details": details},
+                )
+
+        return HealthReport(status=status, message=message, details=details)
 
     async def teardown(self) -> None:
         self._providers.clear()

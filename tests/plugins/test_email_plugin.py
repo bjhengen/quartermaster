@@ -170,3 +170,80 @@ async def test_unread_summary_aggregates_all_accounts(mock_ctx: PluginContext) -
     result = await mock_ctx.tools.execute("email.unread_summary", {})
     assert "accounts" in result
     assert len(result["accounts"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_health_all_ok(mock_ctx: PluginContext) -> None:
+    """health() returns OK with rich detail dicts when all accounts healthy."""
+    from plugins.email.plugin import EmailPlugin
+
+    plugin = EmailPlugin()
+
+    with patch("plugins.email.plugin.GmailProvider") as MockGmail:  # noqa: N806
+        provider1 = AsyncMock()
+        provider1.account_name = "personal"
+        provider1.label = "Personal Gmail"
+        provider1.health_check = AsyncMock(return_value=True)
+
+        provider2 = AsyncMock()
+        provider2.account_name = "fr"
+        provider2.label = "Friendly Robots"
+        provider2.health_check = AsyncMock(return_value=True)
+
+        MockGmail.side_effect = [provider1, provider2]
+        await plugin.setup(mock_ctx)
+
+    report = await plugin.health()
+    assert report.status.value == "ok"
+    assert "personal" in report.details
+    assert report.details["personal"]["status"] == "ok"
+    assert report.details["personal"]["label"] == "Personal Gmail"
+    assert report.details["personal"]["provider"] == "gmail"
+
+
+@pytest.mark.asyncio
+async def test_health_degraded(mock_ctx: PluginContext) -> None:
+    """health() returns DEGRADED when one account fails health_check."""
+    from plugins.email.plugin import EmailPlugin
+
+    plugin = EmailPlugin()
+
+    with patch("plugins.email.plugin.GmailProvider") as MockGmail:  # noqa: N806
+        provider1 = AsyncMock()
+        provider1.account_name = "personal"
+        provider1.label = "Personal Gmail"
+        # healthy at connect, then fails health_check
+        provider1.health_check = AsyncMock(return_value=False)
+
+        provider2 = AsyncMock()
+        provider2.account_name = "fr"
+        provider2.label = "Friendly Robots"
+        provider2.health_check = AsyncMock(return_value=True)
+
+        MockGmail.side_effect = [provider1, provider2]
+        await plugin.setup(mock_ctx)
+
+    report = await plugin.health()
+    assert report.status.value == "degraded"
+    assert report.details["personal"]["status"] == "error"
+    assert report.details["fr"]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_health_down_no_providers(mock_ctx: PluginContext) -> None:
+    """health() returns DOWN when no providers connected."""
+    from plugins.email.plugin import EmailPlugin
+
+    # Use config with no accounts so no providers connect
+    empty_config = QuartermasterConfig(email=EmailConfig(accounts={}))
+    empty_ctx = PluginContext(
+        config=empty_config,
+        events=mock_ctx.events,
+        tools=mock_ctx.tools,
+    )
+
+    plugin = EmailPlugin()
+    await plugin.setup(empty_ctx)
+
+    report = await plugin.health()
+    assert report.status.value == "down"
