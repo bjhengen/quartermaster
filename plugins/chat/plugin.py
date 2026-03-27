@@ -15,6 +15,11 @@ from quartermaster.transport.types import InboundMessage, OutboundMessage
 
 logger = structlog.get_logger()
 
+# Maximum characters for a tool result before truncation.
+# ~8K chars ≈ ~2K tokens — leaves room for system prompt, conversation
+# history, tool schemas, and LLM response within a 32K context window.
+_MAX_TOOL_RESULT_CHARS = 8000
+
 
 class ChatPlugin(QuartermasterPlugin):
     """Handles basic conversational messages."""
@@ -149,10 +154,22 @@ class ChatPlugin(QuartermasterPlugin):
                         ],
                     )
                 )
+                result_json = json.dumps(result, default=str)
+                if len(result_json) > _MAX_TOOL_RESULT_CHARS:
+                    logger.info(
+                        "tool_result_truncated",
+                        tool=tool_call.name,
+                        original_len=len(result_json),
+                        truncated_to=_MAX_TOOL_RESULT_CHARS,
+                    )
+                    result_json = (
+                        result_json[:_MAX_TOOL_RESULT_CHARS]
+                        + '\n... [truncated — result too large for context window]'
+                    )
                 messages.append(
                     ChatMessage(
                         role="tool",
-                        content=json.dumps(result, default=str),
+                        content=result_json,
                         tool_call_id=tool_call.id,
                         name=tool_call.name,
                     )

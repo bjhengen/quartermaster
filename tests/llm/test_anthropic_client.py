@@ -1,5 +1,6 @@
 """Tests for the Anthropic API client."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -67,3 +68,97 @@ async def test_anthropic_converts_tools_to_anthropic_format() -> None:
         tools = call_kwargs.kwargs.get("tools", [])
         assert tools[0]["name"] == "test.tool"
         assert "input_schema" in tools[0]
+
+
+def test_convert_messages_extracts_system() -> None:
+    """System messages become a separate string."""
+    messages = [
+        ChatMessage(role="system", content="You are helpful."),
+        ChatMessage(role="user", content="Hi"),
+    ]
+    system, converted = AnthropicClient._convert_messages(messages)
+    assert system == "You are helpful."
+    assert len(converted) == 1
+    assert converted[0]["role"] == "user"
+
+
+def test_convert_messages_tool_call_format() -> None:
+    """Assistant tool calls become content blocks with type=tool_use."""
+    messages = [
+        ChatMessage(role="user", content="check email"),
+        ChatMessage(
+            role="assistant",
+            tool_calls=[{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "email.unread_summary",
+                    "arguments": "{}",
+                },
+            }],
+        ),
+    ]
+    _, converted = AnthropicClient._convert_messages(messages)
+    assert len(converted) == 2
+
+    assistant_msg = converted[1]
+    assert assistant_msg["role"] == "assistant"
+    assert isinstance(assistant_msg["content"], list)
+    assert assistant_msg["content"][0]["type"] == "tool_use"
+    assert assistant_msg["content"][0]["id"] == "call_123"
+    assert assistant_msg["content"][0]["name"] == "email.unread_summary"
+    assert assistant_msg["content"][0]["input"] == {}
+
+
+def test_convert_messages_tool_result_format() -> None:
+    """Tool results become user messages with type=tool_result blocks."""
+    result_data = {"summaries": [{"id": "m1", "subject": "Test"}], "count": 1}
+    messages = [
+        ChatMessage(role="user", content="check email"),
+        ChatMessage(
+            role="assistant",
+            tool_calls=[{
+                "id": "call_123",
+                "type": "function",
+                "function": {"name": "email.unread_summary", "arguments": "{}"},
+            }],
+        ),
+        ChatMessage(
+            role="tool",
+            content=json.dumps(result_data),
+            tool_call_id="call_123",
+            name="email.unread_summary",
+        ),
+    ]
+    _, converted = AnthropicClient._convert_messages(messages)
+    assert len(converted) == 3
+
+    tool_result_msg = converted[2]
+    assert tool_result_msg["role"] == "user"
+    assert isinstance(tool_result_msg["content"], list)
+    assert tool_result_msg["content"][0]["type"] == "tool_result"
+    assert tool_result_msg["content"][0]["tool_use_id"] == "call_123"
+
+
+def test_convert_messages_multiple_tool_results_merged() -> None:
+    """Multiple consecutive tool results merge into one user message."""
+    messages = [
+        ChatMessage(role="user", content="check email"),
+        ChatMessage(
+            role="assistant",
+            tool_calls=[
+                {"id": "c1", "type": "function", "function": {"name": "tool1", "arguments": "{}"}},
+                {"id": "c2", "type": "function", "function": {"name": "tool2", "arguments": "{}"}},
+            ],
+        ),
+        ChatMessage(role="tool", content='{"r": 1}', tool_call_id="c1", name="tool1"),
+        ChatMessage(role="tool", content='{"r": 2}', tool_call_id="c2", name="tool2"),
+    ]
+    _, converted = AnthropicClient._convert_messages(messages)
+    # user, assistant, user (merged tool results)
+    assert len(converted) == 3
+    tool_msg = converted[2]
+    assert tool_msg["role"] == "user"
+    assert len(tool_msg["content"]) == 2
+    assert tool_msg["content"][0]["tool_use_id"] == "c1"
+    assert tool_msg["content"][1]["tool_use_id"] == "c2"
