@@ -44,8 +44,8 @@ class LLMRouter:
                 return response
             except httpx.TimeoutException:
                 logger.warning("local_llm_timeout", status=status.value)
-            except Exception:
-                logger.exception("local_llm_error")
+            except Exception as exc:
+                logger.exception("local_llm_error", error=str(exc))
 
         # Try local with swap timeout for OTHER_LOADED
         if status == LlamaSwapStatus.OTHER_LOADED:
@@ -55,8 +55,8 @@ class LLMRouter:
                 return response
             except httpx.TimeoutException:
                 logger.warning("local_llm_swap_timeout")
-            except Exception:
-                logger.exception("local_llm_error")
+            except Exception as exc:
+                logger.exception("local_llm_error", error=str(exc))
 
         # Fall back to Anthropic — check budget first
         if self._anthropic:

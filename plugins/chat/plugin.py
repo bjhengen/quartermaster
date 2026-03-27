@@ -1,5 +1,6 @@
 """Chat plugin — basic LLM conversation handling."""
 
+import json
 from typing import Any
 
 import structlog
@@ -142,7 +143,7 @@ class ChatPlugin(QuartermasterPlugin):
                                 "type": "function",
                                 "function": {
                                     "name": tool_call.name,
-                                    "arguments": str(tool_call.arguments),
+                                    "arguments": json.dumps(tool_call.arguments),
                                 },
                             }
                         ],
@@ -151,7 +152,7 @@ class ChatPlugin(QuartermasterPlugin):
                 messages.append(
                     ChatMessage(
                         role="tool",
-                        content=str(result),
+                        content=json.dumps(result, default=str),
                         tool_call_id=tool_call.id,
                         name=tool_call.name,
                     )
