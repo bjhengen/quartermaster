@@ -98,6 +98,24 @@ class CommandsPlugin(QuartermasterPlugin):
                 f"  Streamable HTTP on :{port} — {tool_count} tools exposed"
             )
 
+        # Plugin health (email, etc.)
+        if self._ctx.plugin_loader:
+            health_reports = await self._ctx.plugin_loader.check_health()
+            for plugin_name, report in health_reports.items():
+                if not report.details:
+                    continue
+                status_lines.append(f"\n**{plugin_name.title()}:**")
+                for detail_name, detail in report.details.items():
+                    if isinstance(detail, dict):
+                        label = detail.get("label", detail_name)
+                        provider = detail.get("provider", "")
+                        acct_status = detail.get("status", "unknown")
+                        error = detail.get("error", "")
+                        line = f"  {label} ({provider}): {acct_status}"
+                        if error:
+                            line += f" — {error}"
+                        status_lines.append(line)
+
         await self._send(msg, "\n".join(status_lines))
 
     async def _cmd_models(self, msg: InboundMessage) -> None:

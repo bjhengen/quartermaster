@@ -21,3 +21,4 @@ class PluginContext:
     usage: Any = None  # UsageTracker
     conversation: Any = None  # ConversationManager
     mcp_client: Any = None  # MCPClientManager
+    plugin_loader: Any = None  # PluginLoader

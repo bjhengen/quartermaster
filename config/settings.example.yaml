@@ -86,6 +86,19 @@ quartermaster:
     #   default_approval_tier: confirm  # or: autonomous, notify
     #   enabled: true
 
+  # Email integration
+  email:
+    accounts: {}
+    # Example:
+    # personal:
+    #   provider: gmail
+    #   credential_file: "credentials/gmail_personal.json"
+    #   label: "Personal Gmail"
+    # friendly-robots:
+    #   provider: gmail
+    #   credential_file: "credentials/gmail_fr.json"
+    #   label: "Friendly Robots"
+
   # Logging
   logging:
     level: "INFO"
