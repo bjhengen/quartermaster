@@ -41,8 +41,9 @@ Phase 3a adds Gmail integration to Quartermaster as the first email provider. Tw
 | Async wrapping | `asyncio.to_thread()` around sync Google API calls | Google SDK is synchronous; wrapping prevents event loop blocking |
 | Credential storage | JSON files in `credentials/` (gitignored) | Consistent with existing Anthropic key and MCP token pattern |
 | OAuth setup | Standalone script, run once per account | Reuse ledgr's pattern; outputs credential file directly |
-| Token refresh | Provider writes back to credential file | Handles Google's occasional refresh token rotation |
+| Token refresh | Provider persists refreshed access token to credential file | Access tokens expire hourly; refresh tokens are stable for confidential OAuth clients |
 | Send approval | Confirm tier via Approval Manager | Safety gate — nothing sends without Telegram approval |
+| Unified email plugin | Single `plugins/email/` with provider backends | Supersedes the architecture spec's `plugins/gmail/` + `plugins/outlook/` per-provider layout. One plugin, one tool namespace, multiple providers. |
 | Multi-account routing | `account` parameter on all tools | Explicit routing; `unread_summary` aggregates when account omitted |
 
 ---
@@ -88,15 +89,21 @@ Added to `QuartermasterConfig` as `email: EmailConfig`.
 
 ### Credential File Format
 
+The OAuth setup script writes the full credential JSON produced by `google.oauth2.credentials.Credentials.to_json()`:
+
 ```json
 {
   "client_id": "...",
   "client_secret": "...",
-  "refresh_token": "..."
+  "refresh_token": "...",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "scopes": ["https://www.googleapis.com/auth/gmail.modify"]
 }
 ```
 
-Written once by the OAuth setup script. Read at startup by the provider. Updated in-place if refresh token rotates.
+The `token_uri` field is required by `google-auth` for access token refresh. The `scopes` field is used to validate that the stored credentials match the requested permissions. The provider loads credentials via `Credentials.from_authorized_user_file()` which expects this format.
+
+Written once by the OAuth setup script. Read at startup by the provider. Access tokens expire hourly; the provider persists the refreshed token to the credential file via atomic write (write to temp file, then rename). Refresh tokens are stable for confidential OAuth clients and do not rotate.
 
 ---
 
@@ -115,6 +122,11 @@ src/quartermaster/email/
 ### Data Models (`models.py`)
 
 ```python
+class AttachmentInfo(BaseModel):
+    filename: str
+    mime_type: str
+    size: int  # bytes
+
 class EmailSummary(BaseModel):
     id: str
     subject: str
@@ -137,11 +149,6 @@ class EmailMessage(BaseModel):
     is_read: bool
     labels: list[str] = []
     attachments: list[AttachmentInfo] = []
-
-class AttachmentInfo(BaseModel):
-    filename: str
-    mime_type: str
-    size: int  # bytes
 ```
 
 ### Provider Protocol (`provider.py`)
@@ -189,9 +196,9 @@ Adapted from ledgr's `api/services/gmail.py`:
 - `send()` — builds MIME message, calls `messages.send()`. Returns `{"message_id": "...", "status": "sent"}`
 - `draft()` — builds MIME message, calls `drafts.create()`. Returns `{"draft_id": "...", "status": "drafted"}`
 - `reply()` — fetches original message for thread_id and subject, builds reply with `In-Reply-To` and `References` headers, calls `messages.send()`
-- Token refresh: if `Credentials.refresh()` yields a new refresh token, writes it back to the credential file
+- Token persistence: after `Credentials.refresh()` renews the access token, the provider writes the updated credentials to the file via atomic write (temp file + rename) so the fresh access token is available if the process restarts
 
-**Scopes required:** `gmail.modify`, `gmail.compose`
+**Scope required:** `https://www.googleapis.com/auth/gmail.modify` (subsumes compose, read, send, and draft — everything except permanent deletion)
 
 ---
 
@@ -216,7 +223,7 @@ At startup, the plugin:
 | Tool | Approval Tier | Parameters | Description |
 |------|--------------|------------|-------------|
 | `email.unread_summary` | autonomous | `account` (optional), `max_results` (default 20) | Unread email summaries. Omit account for all accounts aggregated. |
-| `email.search` | autonomous | `account`, `query`, `max_results` (default 10) | Search emails using provider-native query syntax |
+| `email.search` | autonomous | `account` (optional), `query`, `max_results` (default 10) | Search emails. Omit account to search all accounts. |
 | `email.read` | autonomous | `account`, `message_id` | Read full email content |
 | `email.draft` | autonomous | `account`, `to`, `subject`, `body`, `cc` (optional) | Create a draft email |
 | `email.send` | **confirm** | `account`, `to`, `subject`, `body`, `cc` (optional) | Send an email — requires Telegram approval |
@@ -232,7 +239,7 @@ Invalid account names return `{"error": "Unknown email account: 'foo'"}`.
 
 - **setup():** instantiate providers, connect, register tools
 - **teardown():** no persistent connections to close (Google API uses HTTP, no persistent socket)
-- **health():** calls `provider.health_check()` for each account, reports aggregate status
+- **health():** returns `HealthReport` (from `plugin/health.py`). Calls `provider.health_check()` for each account. Status logic: all accounts healthy → `OK`; some accounts healthy → `DEGRADED`; all accounts failed → `DOWN`. Per-account breakdown in `HealthReport.details` dict.
 
 ---
 
@@ -247,8 +254,8 @@ python scripts/gmail_oauth_setup.py \
 ```
 
 1. Reads the Google Cloud OAuth client JSON (downloaded from Cloud Console)
-2. Runs `InstalledAppFlow.run_local_server()` with scopes `gmail.modify` + `gmail.compose`
-3. Writes `credentials/gmail_personal.json` with `client_id`, `client_secret`, `refresh_token`
+2. Runs `InstalledAppFlow.run_local_server()` with scope `gmail.modify`
+3. Writes `credentials/gmail_{account_name}.json` using `creds.to_json()` (includes `client_id`, `client_secret`, `refresh_token`, `token_uri`, `scopes`)
 4. Prints confirmation
 
 The same Google Cloud project used for ledgr can be reused — just add the broader scopes in the Cloud Console's OAuth consent screen.
@@ -269,7 +276,7 @@ No changes to the core startup sequence. The email plugin is loaded through the 
 
 ### Plugin Discovery
 
-Add `EmailPlugin` to `app.py`'s `_discover_plugins()`:
+The current plugin loader uses explicit registration (not directory scanning). Add `EmailPlugin` to `app.py`'s `_discover_plugins()`:
 
 ```python
 from plugins.email.plugin import EmailPlugin
@@ -317,6 +324,10 @@ Gmail API errors (rate limits, network failures, permission errors) are caught p
 - `qm_email_operation_duration_seconds` histogram (labels: `account`, `operation`)
 
 ### /status Command
+
+The `CommandsPlugin._cmd_status()` method needs to be updated to query loaded plugins for health data. Currently it hard-codes subsystem checks (LLM, budget, MCP). For Phase 3a, add a plugin health iteration that calls `health()` on each loaded plugin and renders the result. This is a cross-cutting improvement that benefits all future plugins.
+
+Expected output:
 
 ```
 Email:
