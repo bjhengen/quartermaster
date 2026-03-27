@@ -6,6 +6,7 @@ import asyncio
 import base64
 import tempfile
 from datetime import UTC, datetime
+from email.mime.text import MIMEText
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, cast
@@ -258,6 +259,125 @@ class GmailProvider:
             labels=label_ids,
             attachments=self._extract_attachments(payload),
         )
+
+    # -----------------------------------------------------------------------
+    # Write operations
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _build_mime_message(
+        to: str,
+        subject: str,
+        body: str,
+        cc: str | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> str:
+        """Build a base64url-encoded MIME message."""
+        msg = MIMEText(body, "plain")
+        msg["To"] = to
+        msg["Subject"] = subject
+        if cc:
+            msg["Cc"] = cc
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            msg["References"] = references
+        raw_bytes = msg.as_bytes()
+        return base64.urlsafe_b64encode(raw_bytes).decode("utf-8")
+
+    async def send(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        cc: str | None = None,
+    ) -> dict[str, str]:
+        """Send an email. Returns {"message_id": ..., "status": "sent"}."""
+        raw = self._build_mime_message(to=to, subject=subject, body=body, cc=cc)
+        service = self._service
+
+        def _send() -> dict[str, Any]:
+            return cast(
+                "dict[str, Any]",
+                service.users()
+                .messages()
+                .send(userId="me", body={"raw": raw})
+                .execute(),
+            )
+
+        result = await asyncio.to_thread(_send)
+        return {"message_id": result["id"], "status": "sent"}
+
+    async def draft(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        cc: str | None = None,
+    ) -> dict[str, str]:
+        """Save a draft. Returns {"draft_id": ..., "status": "drafted"}."""
+        raw = self._build_mime_message(to=to, subject=subject, body=body, cc=cc)
+        service = self._service
+
+        def _create() -> dict[str, Any]:
+            return cast(
+                "dict[str, Any]",
+                service.users()
+                .drafts()
+                .create(userId="me", body={"message": {"raw": raw}})
+                .execute(),
+            )
+
+        result = await asyncio.to_thread(_create)
+        return {"draft_id": result["id"], "status": "drafted"}
+
+    async def reply(self, message_id: str, body: str) -> dict[str, str]:
+        """Reply to a message in the same thread."""
+        service = self._service
+
+        # Single fetch — get both structured EmailMessage and raw headers
+        def _get_raw() -> dict[str, Any]:
+            return cast(
+                "dict[str, Any]",
+                service.users()
+                .messages()
+                .get(userId="me", id=message_id, format="full")
+                .execute(),
+            )
+
+        raw_original = await asyncio.to_thread(_get_raw)
+        original = self._parse_message(raw_original)
+        headers = self._extract_headers(raw_original)
+
+        original_message_id = headers.get("message-id", "")
+        references = headers.get("references", "")
+        if original_message_id:
+            references = (references + " " + original_message_id).strip()
+
+        mime_raw = self._build_mime_message(
+            to=original.sender,
+            subject="Re: " + original.subject,
+            body=body,
+            in_reply_to=original_message_id or None,
+            references=references or None,
+        )
+        thread_id = original.thread_id
+
+        def _send_reply() -> dict[str, Any]:
+            return cast(
+                "dict[str, Any]",
+                service.users()
+                .messages()
+                .send(
+                    userId="me",
+                    body={"raw": mime_raw, "threadId": thread_id},
+                )
+                .execute(),
+            )
+
+        result = await asyncio.to_thread(_send_reply)
+        return {"message_id": result["id"], "status": "sent"}
 
     def _persist_credentials(self) -> None:
         """Atomically write refreshed credentials back to file.

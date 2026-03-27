@@ -250,3 +250,159 @@ async def test_read(credential_file: str) -> None:
     svc_msgs.get.assert_called_once_with(
         userId="me", id="full1", format="full"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Write operations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send(credential_file: str) -> None:
+    """send builds MIME message, calls messages.send, returns message_id and status."""
+    provider = GmailProvider(
+        account_name="test",
+        label="Test Account",
+        credential_file=credential_file,
+    )
+    provider._service = MagicMock()
+
+    svc_msgs = provider._service.users.return_value.messages.return_value
+    svc_msgs.send.return_value.execute.return_value = {
+        "id": "sent_msg_001",
+        "threadId": "thread_sent_001",
+        "labelIds": ["SENT"],
+    }
+
+    result = await provider.send(
+        to="bob@example.com",
+        subject="Hello Bob",
+        body="Hi there!",
+    )
+
+    assert result["message_id"] == "sent_msg_001"
+    assert result["status"] == "sent"
+
+    svc_msgs.send.assert_called_once()
+    call_kwargs = svc_msgs.send.call_args
+    assert call_kwargs.kwargs["userId"] == "me"
+    assert "raw" in call_kwargs.kwargs["body"]
+
+
+@pytest.mark.asyncio
+async def test_send_with_cc(credential_file: str) -> None:
+    """send with cc includes CC header in the MIME message."""
+    provider = GmailProvider(
+        account_name="test",
+        label="Test Account",
+        credential_file=credential_file,
+    )
+    provider._service = MagicMock()
+
+    svc_msgs = provider._service.users.return_value.messages.return_value
+    svc_msgs.send.return_value.execute.return_value = {
+        "id": "sent_cc_001",
+        "threadId": "thread_cc_001",
+        "labelIds": ["SENT"],
+    }
+
+    result = await provider.send(
+        to="bob@example.com",
+        subject="CC Test",
+        body="CC me in",
+        cc="carol@example.com",
+    )
+
+    assert result["message_id"] == "sent_cc_001"
+    assert result["status"] == "sent"
+
+    # Verify the raw MIME contains a Cc header
+    import base64
+
+    call_kwargs = svc_msgs.send.call_args
+    raw = call_kwargs.kwargs["body"]["raw"]
+    decoded = base64.urlsafe_b64decode(raw + "==").decode()
+    assert "carol@example.com" in decoded
+
+
+@pytest.mark.asyncio
+async def test_draft(credential_file: str) -> None:
+    """draft calls drafts.create, returns draft_id and status."""
+    provider = GmailProvider(
+        account_name="test",
+        label="Test Account",
+        credential_file=credential_file,
+    )
+    provider._service = MagicMock()
+
+    svc_drafts = provider._service.users.return_value.drafts.return_value
+    svc_drafts.create.return_value.execute.return_value = {
+        "id": "draft_001",
+        "message": {"id": "draft_msg_001", "threadId": "thread_draft_001"},
+    }
+
+    result = await provider.draft(
+        to="charlie@example.com",
+        subject="Draft Test",
+        body="Draft body text",
+    )
+
+    assert result["draft_id"] == "draft_001"
+    assert result["status"] == "drafted"
+
+    svc_drafts.create.assert_called_once()
+    call_kwargs = svc_drafts.create.call_args
+    assert call_kwargs.kwargs["userId"] == "me"
+    assert "raw" in call_kwargs.kwargs["body"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_reply(credential_file: str) -> None:
+    """reply reads original, builds reply with In-Reply-To, sends in same thread."""
+    provider = GmailProvider(
+        account_name="test",
+        label="Test Account",
+        credential_file=credential_file,
+    )
+    provider._service = MagicMock()
+
+    original = _make_gmail_message(
+        msg_id="orig_001",
+        thread_id="thread_reply_001",
+        subject="Original Subject",
+        sender="alice@example.com",
+        to="me@example.com",
+        label_ids=["INBOX"],
+    )
+    # Add Message-ID header to original
+    original["payload"]["headers"].append(
+        {"name": "Message-ID", "value": "<orig_message_id@example.com>"}
+    )
+
+    svc_msgs = provider._service.users.return_value.messages.return_value
+    svc_msgs.get.return_value.execute.return_value = original
+    svc_msgs.send.return_value.execute.return_value = {
+        "id": "reply_sent_001",
+        "threadId": "thread_reply_001",
+        "labelIds": ["SENT"],
+    }
+
+    result = await provider.reply(
+        message_id="orig_001",
+        body="Thanks for your message!",
+    )
+
+    assert result["message_id"] == "reply_sent_001"
+    assert result["status"] == "sent"
+
+    # Verify thread_id was used in the send call
+    send_call = svc_msgs.send.call_args
+    assert send_call.kwargs["body"].get("threadId") == "thread_reply_001"
+
+    # Verify In-Reply-To header in the MIME message
+    import base64
+
+    raw = send_call.kwargs["body"]["raw"]
+    decoded = base64.urlsafe_b64decode(raw + "==").decode()
+    assert "In-Reply-To" in decoded
+    assert "<orig_message_id@example.com>" in decoded
