@@ -128,7 +128,7 @@ class EmailPlugin(QuartermasterPlugin):
         ctx.tools.register(
             name="email.search",
             description=(
-                "Search emails using a Gmail query string. "
+                "Search emails using a query string. "
                 "If 'account' is omitted, searches all configured accounts."
             ),
             parameters={
@@ -136,7 +136,7 @@ class EmailPlugin(QuartermasterPlugin):
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Gmail search query (e.g. 'from:boss@example.com').",
+                        "description": "Search query (e.g. 'from:boss@example.com').",
                     },
                     "account": {
                         "type": "string",
@@ -168,7 +168,7 @@ class EmailPlugin(QuartermasterPlugin):
                     },
                     "message_id": {
                         "type": "string",
-                        "description": "The Gmail message ID to read.",
+                        "description": "The message ID to read.",
                     },
                 },
                 "required": ["account", "message_id"],

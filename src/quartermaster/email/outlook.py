@@ -188,7 +188,9 @@ class OutlookProvider:
         """Read a full email message."""
         await self._refresh_token_if_needed()
         resp = await self._http.get(
-            f"/me/messages/{message_id}", headers=self._auth_headers()
+            f"/me/messages/{message_id}",
+            params={"$expand": "attachments"},
+            headers=self._auth_headers(),
         )
         resp.raise_for_status()
         return self._parse_message(resp.json())
@@ -267,7 +269,7 @@ class OutlookProvider:
             if not accounts:
                 return None
             result = self._msal_app.acquire_token_silent(
-                scopes=GRAPH_SCOPES[:2],
+                scopes=GRAPH_SCOPES,
                 account=accounts[0],
             )
             if result and "access_token" in result:

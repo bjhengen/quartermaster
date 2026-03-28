@@ -6,7 +6,7 @@ Uses MSAL device code flow — works on headless servers.
 Pre-requisites:
   1. Register an app in Entra ID (https://entra.microsoft.com)
   2. Set as Public client with redirect URI http://localhost
-  3. Add API permissions: Mail.ReadWrite, User.Read, offline_access
+  3. Add API permissions: Mail.ReadWrite, Mail.Send, User.Read, Calendars.ReadWrite
   4. Enable "Allow public client flows"
   5. Note the Application (client) ID and Directory (tenant) ID
 
