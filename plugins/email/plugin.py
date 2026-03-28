@@ -10,9 +10,16 @@ import structlog
 
 from quartermaster.core.metrics import email_operation_duration, email_operations_total
 from quartermaster.core.tools import ApprovalTier
-from quartermaster.email.gmail import GmailProvider
+from quartermaster.email.gmail import (
+    GmailProvider,  # noqa: F401  # used via module-attr lookup in _get_provider_cls
+)
 from quartermaster.plugin.base import QuartermasterPlugin
 from quartermaster.plugin.health import HealthReport, HealthStatus
+
+try:
+    from quartermaster.email.outlook import OutlookProvider
+except ImportError:
+    OutlookProvider = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
     from quartermaster.email.models import EmailSummary
@@ -30,18 +37,23 @@ class EmailPlugin(QuartermasterPlugin):
 
     def __init__(self) -> None:
         self._ctx: PluginContext | None = None
-        self._providers: dict[str, GmailProvider] = {}
+        self._providers: dict[str, Any] = {}
 
     @staticmethod
     def _get_provider_cls(provider_name: str) -> type | None:
         """Look up a provider class by name at call time (not import time).
 
         Resolved at call time so that unittest.mock patches on
-        ``plugins.email.plugin.GmailProvider`` take effect correctly.
+        ``plugins.email.plugin.GmailProvider`` / ``OutlookProvider`` take
+        effect correctly — both names are looked up in the module's global
+        scope each time this method is called.
         """
-        mapping: dict[str, type] = {
-            "gmail": GmailProvider,
-        }
+        import plugins.email.plugin as _self  # noqa: PLC0415
+
+        # Use the module-attribute lookup so mock patches are respected.
+        mapping: dict[str, type] = {"gmail": _self.GmailProvider}
+        if _self.OutlookProvider is not None:
+            mapping["outlook"] = _self.OutlookProvider
         return mapping.get(provider_name)
 
     async def setup(self, ctx: PluginContext) -> None:
@@ -59,7 +71,7 @@ class EmailPlugin(QuartermasterPlugin):
                 )
                 continue
 
-            provider: GmailProvider = provider_cls(
+            provider: Any = provider_cls(
                 account_name=account_name,
                 label=account_cfg.label,
                 credential_file=account_cfg.credential_file,
@@ -266,7 +278,7 @@ class EmailPlugin(QuartermasterPlugin):
                 healthy_count += 1
             details[account_name] = {
                 "label": provider.label,
-                "provider": "gmail",
+                "provider": provider.provider_type,
                 "status": "ok" if is_healthy else "error",
                 "error": "" if is_healthy else "health check failed",
             }
@@ -295,6 +307,9 @@ class EmailPlugin(QuartermasterPlugin):
         return HealthReport(status=status, message=message, details=details)
 
     async def teardown(self) -> None:
+        for provider in self._providers.values():
+            with contextlib.suppress(Exception):
+                await provider.close()
         self._providers.clear()
 
     # -----------------------------------------------------------------------
