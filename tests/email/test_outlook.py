@@ -285,3 +285,105 @@ async def test_read(credential_file: str) -> None:
     assert result.subject == "Full Message"
     assert result.body == "Full body text."
     assert result.thread_id == "conv1"
+
+
+# ------------------------------------------------------------------
+# Write operations (Task 6)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send(credential_file: str) -> None:
+    provider = OutlookProvider(
+        account_name="fr-brian",
+        label="FR Brian",
+        credential_file=credential_file,
+    )
+    provider._access_token = "mock-token"
+
+    with patch.object(provider, "_http") as mock_http:
+        mock_http.post = AsyncMock(return_value=_mock_response(202, {}))
+        with patch.object(provider, "_refresh_token_if_needed", new_callable=AsyncMock):
+            result = await provider.send(
+                to="recipient@example.com",
+                subject="Test Email",
+                body="This is a test.",
+            )
+
+    assert result["status"] == "sent"
+    assert result["message_id"] == ""  # Graph sendMail returns no ID
+    # Verify the sendMail endpoint was called
+    mock_http.post.assert_called_once()
+    call_args = mock_http.post.call_args
+    assert "/me/sendMail" in call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_send_with_cc(credential_file: str) -> None:
+    provider = OutlookProvider(
+        account_name="fr-brian",
+        label="FR Brian",
+        credential_file=credential_file,
+    )
+    provider._access_token = "mock-token"
+
+    with patch.object(provider, "_http") as mock_http:
+        mock_http.post = AsyncMock(return_value=_mock_response(202))
+        with patch.object(provider, "_refresh_token_if_needed", new_callable=AsyncMock):
+            result = await provider.send(
+                to="recipient@example.com",
+                subject="CC Test",
+                body="Testing CC.",
+                cc="team@example.com",
+            )
+
+    assert result["status"] == "sent"
+    # Verify CC was in the request body
+    body = mock_http.post.call_args.kwargs.get("json", {})
+    cc_list = body.get("message", {}).get("ccRecipients", [])
+    assert len(cc_list) == 1
+
+
+@pytest.mark.asyncio
+async def test_draft(credential_file: str) -> None:
+    provider = OutlookProvider(
+        account_name="fr-brian",
+        label="FR Brian",
+        credential_file=credential_file,
+    )
+    provider._access_token = "mock-token"
+
+    with patch.object(provider, "_http") as mock_http:
+        mock_http.post = AsyncMock(return_value=_mock_response(201, {"id": "draft-123"}))
+        with patch.object(provider, "_refresh_token_if_needed", new_callable=AsyncMock):
+            result = await provider.draft(
+                to="recipient@example.com",
+                subject="Draft Subject",
+                body="Draft body.",
+            )
+
+    assert result["draft_id"] == "draft-123"
+    assert result["status"] == "drafted"
+
+
+@pytest.mark.asyncio
+async def test_reply(credential_file: str) -> None:
+    provider = OutlookProvider(
+        account_name="fr-brian",
+        label="FR Brian",
+        credential_file=credential_file,
+    )
+    provider._access_token = "mock-token"
+
+    with patch.object(provider, "_http") as mock_http:
+        mock_http.post = AsyncMock(return_value=_mock_response(202))
+        with patch.object(provider, "_refresh_token_if_needed", new_callable=AsyncMock):
+            result = await provider.reply(
+                message_id="AAMkAG1",
+                body="Thanks for the update!",
+            )
+
+    assert result["status"] == "sent"
+    # Verify the reply endpoint was called
+    call_args = mock_http.post.call_args
+    assert "/me/messages/AAMkAG1/reply" in call_args.args[0]
