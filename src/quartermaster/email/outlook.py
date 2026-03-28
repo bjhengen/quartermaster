@@ -22,7 +22,9 @@ logger = structlog.get_logger()
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 GRAPH_SCOPES = [
     "https://graph.microsoft.com/Mail.ReadWrite",
+    "https://graph.microsoft.com/Mail.Send",
     "https://graph.microsoft.com/User.Read",
+    "https://graph.microsoft.com/Calendars.ReadWrite",
 ]
 
 
