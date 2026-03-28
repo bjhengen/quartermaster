@@ -50,6 +50,13 @@ class GmailProvider:
     def label(self) -> str:
         return self._label
 
+    @property
+    def provider_type(self) -> str:
+        return "gmail"
+
+    async def close(self) -> None:
+        """No persistent connections to close for Gmail API."""
+
     async def connect(self) -> None:
         """Load credentials, refresh if needed, build Gmail service."""
         needs_persist = False
