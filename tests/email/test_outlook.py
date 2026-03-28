@@ -178,3 +178,110 @@ async def test_close(credential_file: str) -> None:
     provider._http = mock_http
     await provider.close()
     mock_http.aclose.assert_awaited_once()
+
+
+# ------------------------------------------------------------------
+# Read operations (Task 5)
+# ------------------------------------------------------------------
+
+
+def _make_graph_message(
+    msg_id: str = "AAMkAG1",
+    subject: str = "Test Subject",
+    sender: str = "sender@example.com",
+    body: str = "Hello, world!",
+    snippet: str = "Hello...",
+    is_read: bool = False,
+    conversation_id: str = "conv1",
+) -> dict:
+    """Build a mock Graph API message response."""
+    return {
+        "id": msg_id,
+        "subject": subject,
+        "from": {"emailAddress": {"name": "Sender", "address": sender}},
+        "toRecipients": [{"emailAddress": {"name": "Me", "address": "me@example.com"}}],
+        "ccRecipients": [],
+        "receivedDateTime": "2026-03-27T10:00:00Z",
+        "bodyPreview": snippet,
+        "body": {"contentType": "text", "content": body},
+        "isRead": is_read,
+        "conversationId": conversation_id,
+        "hasAttachments": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_unread_summary(credential_file: str) -> None:
+    provider = OutlookProvider(
+        account_name="fr-brian",
+        label="FR Brian",
+        credential_file=credential_file,
+    )
+    provider._access_token = "mock-token"
+
+    resp_data = {
+        "value": [
+            _make_graph_message(msg_id="m1", subject="First", is_read=False),
+            _make_graph_message(msg_id="m2", subject="Second", is_read=False),
+        ]
+    }
+
+    with patch.object(provider, "_http") as mock_http:
+        mock_http.get = AsyncMock(return_value=_mock_response(200, resp_data))
+        with patch.object(provider, "_refresh_token_if_needed", new_callable=AsyncMock):
+            result = await provider.get_unread_summary(max_results=5)
+
+    assert len(result) == 2
+    assert result[0].id == "m1"
+    assert result[0].subject == "First"
+    assert result[0].is_read is False
+
+
+@pytest.mark.asyncio
+async def test_search(credential_file: str) -> None:
+    provider = OutlookProvider(
+        account_name="fr-brian",
+        label="FR Brian",
+        credential_file=credential_file,
+    )
+    provider._access_token = "mock-token"
+
+    resp_data = {"value": [_make_graph_message(msg_id="m1", subject="Search Result")]}
+
+    with patch.object(provider, "_http") as mock_http:
+        mock_http.get = AsyncMock(return_value=_mock_response(200, resp_data))
+        with patch.object(provider, "_refresh_token_if_needed", new_callable=AsyncMock):
+            result = await provider.search("from:alice@example.com", max_results=5)
+
+    assert len(result) == 1
+    assert result[0].subject == "Search Result"
+
+    # Verify ConsistencyLevel header was passed
+    call_args = mock_http.get.call_args
+    assert call_args.kwargs.get("headers", {}).get("ConsistencyLevel") == "eventual"
+
+
+@pytest.mark.asyncio
+async def test_read(credential_file: str) -> None:
+    provider = OutlookProvider(
+        account_name="fr-brian",
+        label="FR Brian",
+        credential_file=credential_file,
+    )
+    provider._access_token = "mock-token"
+
+    resp_data = _make_graph_message(
+        msg_id="m1",
+        subject="Full Message",
+        body="Full body text.",
+    )
+
+    with patch.object(provider, "_http") as mock_http:
+        mock_http.get = AsyncMock(return_value=_mock_response(200, resp_data))
+        with patch.object(provider, "_refresh_token_if_needed", new_callable=AsyncMock):
+            result = await provider.read("m1")
+
+    assert result.id == "m1"
+    assert result.subject == "Full Message"
+    assert result.body == "Full body text."
+    assert result.thread_id == "conv1"
