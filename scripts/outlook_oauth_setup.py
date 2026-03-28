@@ -27,7 +27,7 @@ from msal import PublicClientApplication, SerializableTokenCache
 SCOPES = [
     "https://graph.microsoft.com/Mail.ReadWrite",
     "https://graph.microsoft.com/User.Read",
-    "offline_access",
+    # offline_access is reserved — MSAL adds it automatically
 ]
 
 

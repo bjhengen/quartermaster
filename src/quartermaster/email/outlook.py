@@ -23,7 +23,6 @@ GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 GRAPH_SCOPES = [
     "https://graph.microsoft.com/Mail.ReadWrite",
     "https://graph.microsoft.com/User.Read",
-    "offline_access",
 ]
 
 
@@ -94,7 +93,7 @@ class OutlookProvider:
                 )
 
             result = self._msal_app.acquire_token_silent(
-                scopes=GRAPH_SCOPES[:2],  # exclude offline_access for silent
+                scopes=GRAPH_SCOPES,
                 account=accounts[0],
             )
             if result is None or "access_token" not in result:
