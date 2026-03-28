@@ -89,7 +89,7 @@ quartermaster:
   # Email integration
   email:
     accounts: {}
-    # Example:
+    # Example Gmail accounts:
     # personal:
     #   provider: gmail
     #   credential_file: "credentials/gmail_personal.json"
@@ -98,6 +98,15 @@ quartermaster:
     #   provider: gmail
     #   credential_file: "credentials/gmail_fr.json"
     #   label: "Friendly Robots"
+    # Example Outlook/O365 accounts (run scripts/outlook_oauth_setup.py first):
+    # fr-brian:
+    #   provider: outlook
+    #   credential_file: "credentials/outlook_brian.json"
+    #   label: "FR Brian"
+    # fr-support:
+    #   provider: outlook
+    #   credential_file: "credentials/outlook_support.json"
+    #   label: "FR Support"
 
   # Logging
   logging:

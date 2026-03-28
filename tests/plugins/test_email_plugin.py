@@ -10,6 +10,30 @@ from quartermaster.plugin.context import PluginContext
 
 
 @pytest.fixture
+def outlook_config() -> QuartermasterConfig:
+    return QuartermasterConfig(
+        email=EmailConfig(
+            accounts={
+                "fr-brian": EmailAccountConfig(
+                    provider="outlook",
+                    credential_file="credentials/outlook_brian.json",
+                    label="FR Brian",
+                ),
+            }
+        )
+    )
+
+
+@pytest.fixture
+def outlook_ctx(outlook_config: QuartermasterConfig, mock_ctx: PluginContext) -> PluginContext:
+    return PluginContext(
+        config=outlook_config,
+        events=mock_ctx.events,
+        tools=ToolRegistry(events=mock_ctx.events),
+    )
+
+
+@pytest.fixture
 def email_config() -> QuartermasterConfig:
     return QuartermasterConfig(
         email=EmailConfig(
@@ -183,11 +207,13 @@ async def test_health_all_ok(mock_ctx: PluginContext) -> None:
         provider1 = AsyncMock()
         provider1.account_name = "personal"
         provider1.label = "Personal Gmail"
+        provider1.provider_type = "gmail"
         provider1.health_check = AsyncMock(return_value=True)
 
         provider2 = AsyncMock()
         provider2.account_name = "fr"
         provider2.label = "Friendly Robots"
+        provider2.provider_type = "gmail"
         provider2.health_check = AsyncMock(return_value=True)
 
         MockGmail.side_effect = [provider1, provider2]
@@ -212,12 +238,14 @@ async def test_health_degraded(mock_ctx: PluginContext) -> None:
         provider1 = AsyncMock()
         provider1.account_name = "personal"
         provider1.label = "Personal Gmail"
+        provider1.provider_type = "gmail"
         # healthy at connect, then fails health_check
         provider1.health_check = AsyncMock(return_value=False)
 
         provider2 = AsyncMock()
         provider2.account_name = "fr"
         provider2.label = "Friendly Robots"
+        provider2.provider_type = "gmail"
         provider2.health_check = AsyncMock(return_value=True)
 
         MockGmail.side_effect = [provider1, provider2]
@@ -247,3 +275,93 @@ async def test_health_down_no_providers(mock_ctx: PluginContext) -> None:
 
     report = await plugin.health()
     assert report.status.value == "down"
+
+
+@pytest.mark.asyncio
+async def test_health_reports_correct_provider_type(outlook_ctx: PluginContext) -> None:
+    from plugins.email.plugin import EmailPlugin
+    plugin = EmailPlugin()
+    with patch("plugins.email.plugin.OutlookProvider") as MockOutlook:  # noqa: N806
+        provider = AsyncMock()
+        provider.account_name = "fr-brian"
+        provider.label = "FR Brian"
+        provider.provider_type = "outlook"
+        provider.health_check = AsyncMock(return_value=True)
+        MockOutlook.return_value = provider
+        await plugin.setup(outlook_ctx)
+    report = await plugin.health()
+    assert report.details["fr-brian"]["provider"] == "outlook"
+
+
+@pytest.mark.asyncio
+async def test_mixed_providers_route_correctly(mock_ctx: PluginContext) -> None:
+    """Plugin routes to correct provider when mixing gmail + outlook."""
+    from plugins.email.plugin import EmailPlugin
+    from quartermaster.email.models import EmailSummary
+
+    plugin = EmailPlugin()
+
+    gmail_summaries = [
+        EmailSummary(
+            id="g1", subject="Gmail", sender="a@gmail.com", date=None, snippet="...", is_read=False
+        ),
+    ]
+    outlook_summaries = [
+        EmailSummary(
+            id="o1", subject="Outlook", sender="b@outlook.com",  # noqa: E501
+            date=None, snippet="...", is_read=False
+        ),
+    ]
+
+    # Need config with both provider types
+    mixed_config = QuartermasterConfig(
+        email=EmailConfig(
+            accounts={
+                "personal": EmailAccountConfig(
+                    provider="gmail",
+                    credential_file="credentials/gmail.json",
+                    label="Personal Gmail",
+                ),
+                "fr-brian": EmailAccountConfig(
+                    provider="outlook",
+                    credential_file="credentials/outlook.json",
+                    label="FR Brian",
+                ),
+            }
+        )
+    )
+    mixed_ctx = PluginContext(
+        config=mixed_config,
+        events=mock_ctx.events,
+        tools=ToolRegistry(events=mock_ctx.events),
+    )
+
+    with patch("plugins.email.plugin.GmailProvider") as MockGmail, \
+         patch("plugins.email.plugin.OutlookProvider") as MockOutlook:  # noqa: N806
+        gmail_provider = AsyncMock()
+        gmail_provider.account_name = "personal"
+        gmail_provider.label = "Personal Gmail"
+        gmail_provider.provider_type = "gmail"
+        gmail_provider.health_check = AsyncMock(return_value=True)
+        gmail_provider.get_unread_summary = AsyncMock(return_value=gmail_summaries)
+        MockGmail.return_value = gmail_provider
+
+        outlook_provider = AsyncMock()
+        outlook_provider.account_name = "fr-brian"
+        outlook_provider.label = "FR Brian"
+        outlook_provider.provider_type = "outlook"
+        outlook_provider.health_check = AsyncMock(return_value=True)
+        outlook_provider.get_unread_summary = AsyncMock(return_value=outlook_summaries)
+        MockOutlook.return_value = outlook_provider
+
+        await plugin.setup(mixed_ctx)
+
+    # Aggregate all accounts
+    result = await mixed_ctx.tools.execute("email.unread_summary", {})
+    assert "accounts" in result
+    assert len(result["accounts"]) == 2
+
+    # Health should show correct provider types
+    report = await plugin.health()
+    assert report.details["personal"]["provider"] == "gmail"
+    assert report.details["fr-brian"]["provider"] == "outlook"

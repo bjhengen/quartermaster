@@ -103,6 +103,25 @@ def test_properties(credential_file: str) -> None:
     assert provider.label == "Personal Gmail"
 
 
+def test_provider_type(credential_file: str) -> None:
+    provider = GmailProvider(
+        account_name="test",
+        label="Test",
+        credential_file=credential_file,
+    )
+    assert provider.provider_type == "gmail"
+
+
+@pytest.mark.asyncio
+async def test_close_is_noop(credential_file: str) -> None:
+    provider = GmailProvider(
+        account_name="test",
+        label="Test",
+        credential_file=credential_file,
+    )
+    await provider.close()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
