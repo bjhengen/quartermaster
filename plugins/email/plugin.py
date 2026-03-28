@@ -13,13 +13,11 @@ from quartermaster.core.tools import ApprovalTier
 from quartermaster.email.gmail import (
     GmailProvider,  # noqa: F401  # used via module-attr lookup in _get_provider_cls
 )
+from quartermaster.email.outlook import (
+    OutlookProvider,  # noqa: F401  # used via module-attr lookup in _get_provider_cls
+)
 from quartermaster.plugin.base import QuartermasterPlugin
 from quartermaster.plugin.health import HealthReport, HealthStatus
-
-try:
-    from quartermaster.email.outlook import OutlookProvider
-except ImportError:
-    OutlookProvider = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
     from quartermaster.email.models import EmailSummary
@@ -51,9 +49,10 @@ class EmailPlugin(QuartermasterPlugin):
         import plugins.email.plugin as _self  # noqa: PLC0415
 
         # Use the module-attribute lookup so mock patches are respected.
-        mapping: dict[str, type] = {"gmail": _self.GmailProvider}
-        if _self.OutlookProvider is not None:
-            mapping["outlook"] = _self.OutlookProvider
+        mapping: dict[str, type] = {
+            "gmail": _self.GmailProvider,
+            "outlook": _self.OutlookProvider,
+        }
         return mapping.get(provider_name)
 
     async def setup(self, ctx: PluginContext) -> None:
